@@ -1,16 +1,13 @@
-import type { Express } from "express";
-import { createServer, type Server } from "http";
-import { WebSocketServer } from "ws";
+import type { Express, Request, Response, NextFunction } from "express";
 import session from "express-session";
-import MemoryStore from "memorystore";
+import connectPgSimple from "connect-pg-simple";
 import yahooFinance from "yahoo-finance2";
 import axios from "axios";
 import { storage } from "./storage";
 import { z } from "zod";
-import cron from "node-cron";
-import type { StockQuote, CryptoQuote, AssetQuote, ChartData, NewsItem, CryptoCoin, TrendingCrypto, EconomicEvent, CompanyFundamentals, LoginCredentials, SignupCredentials, AuthUser } from "@shared/schema";
-import { insertAlertSchema, insertUserSchema, insertUserProfileSchema, insertUserPreferencesSchema, insertNotificationSchema, historicalPrices } from "@shared/schema";
-import { db } from "./db";
+import type { StockQuote, CryptoQuote, AssetQuote, ChartData, NewsItem, CryptoCoin, TrendingCrypto, EconomicEvent, CompanyFundamentals, LoginCredentials, SignupCredentials, AuthUser } from "../shared/schema";
+import { insertAlertSchema, insertUserSchema, insertUserProfileSchema, insertUserPreferencesSchema, insertNotificationSchema, historicalPrices } from "../shared/schema";
+import { db, pool } from "./db";
 import * as dr from "drizzle-orm";
 import { RiskAnalyticsService, type PortfolioRiskMetrics, type PortfolioPosition } from "./lib/riskAnalytics";
 import { AlertsEngine } from "./lib/alertsEngine";
@@ -1770,69 +1767,32 @@ class FinnhubService {
   }
 }
 
-export async function registerRoutes(app: Express): Promise<Server> {
-  const httpServer = createServer(app);
-
-  // Configure session middleware
-  const MemStore = MemoryStore(session);
+export async function registerRoutes(app: Express): Promise<void> {
+  // Configure session middleware backed by Postgres (serverless-safe)
+  const PgStore = connectPgSimple(session);
   app.use(session({
     secret: process.env.SESSION_SECRET || 'dev-secret-key-change-in-production',
     resave: false,
     saveUninitialized: false,
-    store: new MemStore({
-      checkPeriod: 86400000 // prune expired entries every 24h
+    store: new PgStore({
+      pool: pool as any,
+      createTableIfMissing: true
     }),
     cookie: {
-      secure: false, // set to true in production with HTTPS
+      secure: process.env.NODE_ENV === 'production',
       httpOnly: true,
       maxAge: 24 * 60 * 60 * 1000 // 24 hours
     }
   }));
-  
-  // WebSocket server for real-time updates on a specific path
-  const wss = new WebSocketServer({ 
-    server: httpServer, 
-    path: '/api/ws'
-  });
-  
-  // Store active WebSocket connections
-  const activeConnections = new Set<any>();
-  
-  // Initialize AlertsEngine with storage and broadcast capability
+
+  // Initialize AlertsEngine with storage
   const alertsEngine = new AlertsEngine(storage);
-  
-  wss.on('connection', (ws) => {
-    console.log('New WebSocket connection established');
-    activeConnections.add(ws);
-    
-    ws.on('close', () => {
-      console.log('WebSocket connection closed');
-      activeConnections.delete(ws);
-    });
-    
-    ws.on('error', (error) => {
-      console.error('WebSocket error:', error);
-      activeConnections.delete(ws);
-    });
-    
-    // Send initial market status
-    ws.send(JSON.stringify({
-      type: 'market_status',
-      data: { status: 'OPEN', timestamp: new Date() }
-    }));
-  });
-  
-  // Function to broadcast updates to all connected clients
-  const broadcast = (type: string, data: any) => {
-    const message = JSON.stringify({ type, data, timestamp: new Date() });
-    activeConnections.forEach(ws => {
-      try {
-        ws.send(message);
-      } catch (error) {
-        console.error('Error broadcasting to client:', error);
-        activeConnections.delete(ws);
-      }
-    });
+
+  // NOTE: WebSocket push is not supported on Vercel Functions.
+  // Real-time updates are handled by client-side polling (React Query refetch).
+  // broadcast() is kept as a no-op for compatibility with existing call sites.
+  const broadcast = (_type: string, _data: any) => {
+    // no-op in serverless environment
   };
   
   // Function to broadcast triggered alerts
@@ -3648,78 +3608,92 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Set up periodic data updates and alert monitoring
-  cron.schedule('*/30 * * * * *', async () => {
+  // ----- Vercel Cron endpoints (replaces in-process node-cron jobs) -----
+  // Vercel Cron invokes these with "Authorization: Bearer <CRON_SECRET>" when
+  // the CRON_SECRET environment variable is set on the project.
+  const verifyCronAuth = (req: Request, res: Response, next: NextFunction) => {
+    const cronSecret = process.env.CRON_SECRET;
+    if (cronSecret && req.headers.authorization !== `Bearer ${cronSecret}`) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    next();
+  };
+
+  // Market data refresh + price/volume alert checks (was: every 30s node-cron)
+  app.get('/api/cron/market', verifyCronAuth, async (_req, res) => {
     try {
-      // Update market indices every 30 seconds during market hours
       const indices = await FinanceService.getMarketIndices();
       broadcast('market_update', indices);
-      
+
       // Update popular stocks and check for alerts
       const popularSymbols = ["AAPL", "GOOGL", "MSFT", "TSLA", "NVDA"];
       const quotes = await FinanceService.getMultipleQuotes(popularSymbols);
       broadcast('stock_update', quotes);
-      
+
+      let triggeredCount = 0;
+
       // Check alerts for all updated stock quotes
       for (const quote of quotes) {
         try {
           const priceAlerts = await alertsEngine.checkPriceAlerts(quote);
           const volumeAlerts = await alertsEngine.checkVolumeAlerts(quote);
           const allTriggeredAlerts = [...priceAlerts, ...volumeAlerts];
+          triggeredCount += allTriggeredAlerts.length;
           await broadcastTriggeredAlerts(allTriggeredAlerts);
         } catch (alertError) {
           console.error('Error checking periodic alerts for', quote.symbol, ':', alertError);
         }
       }
-      
+
       // Update popular cryptocurrencies and check alerts
       const popularCryptoSymbols = ["BTC", "ETH", "ADA", "SOL", "DOGE", "XRP", "DOT", "MATIC", "AVAX", "LINK"];
       const cryptoQuotes = await CoinGeckoService.getMultipleCryptoQuotes(popularCryptoSymbols);
       broadcast('crypto_update', cryptoQuotes);
-      
+
       // Check alerts for all updated crypto quotes
       for (const quote of cryptoQuotes) {
         try {
           const priceAlerts = await alertsEngine.checkPriceAlerts(quote);
           const volumeAlerts = await alertsEngine.checkVolumeAlerts(quote);
           const allTriggeredAlerts = [...priceAlerts, ...volumeAlerts];
+          triggeredCount += allTriggeredAlerts.length;
           await broadcastTriggeredAlerts(allTriggeredAlerts);
         } catch (alertError) {
           console.error('Error checking periodic crypto alerts for', quote.symbol, ':', alertError);
         }
       }
-      
-      // Update trending cryptocurrencies
-      const trendingCryptos = await CoinGeckoService.getTrendingCryptos();
-      broadcast('crypto_trending', trendingCryptos);
-      
+
+      res.json({ success: true, stocks: quotes.length, cryptos: cryptoQuotes.length, alertsTriggered: triggeredCount });
     } catch (error) {
-      console.error('Error in periodic update:', error);
+      console.error('Error in market cron job:', error);
+      res.status(500).json({ error: 'Market cron job failed' });
     }
   });
-  
-  // Set up volatility and breakout monitoring every 5 minutes
-  cron.schedule('*/5 * * * *', async () => {
+
+  // Volatility and breakout monitoring (was: every 5 min node-cron)
+  app.get('/api/cron/volatility', verifyCronAuth, async (_req, res) => {
     try {
       console.log('Running volatility and breakout alert checks...');
-      
+      let checkedSymbols = 0;
+
       // Get watchlist symbols for focused monitoring
       const demoUser = await storage.getDemoUser();
       if (demoUser) {
         const watchlist = await storage.getWatchlist(demoUser.id);
-        
+
         for (const item of watchlist) {
           try {
             // Get chart data for volatility and breakout analysis
             let chartData = [];
-            
+
             if (item.assetType === 'crypto' || CoinGeckoService.isCrypto(item.symbol)) {
               chartData = await CoinGeckoService.getCryptoChart(item.symbol, '1D');
             } else {
               chartData = await FinanceService.getChart(item.symbol, '1D');
             }
-            
+
             if (chartData.length > 0) {
+              checkedSymbols++;
               const volatilityAlerts = await alertsEngine.checkVolatilityAlerts(item.symbol, chartData);
               const breakoutAlerts = await alertsEngine.checkBreakoutAlerts(item.symbol, chartData);
               const allTriggeredAlerts = [...volatilityAlerts, ...breakoutAlerts];
@@ -3730,19 +3704,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         }
       }
+
+      res.json({ success: true, checkedSymbols });
     } catch (error) {
-      console.error('Error in volatility/breakout monitoring:', error);
+      console.error('Error in volatility/breakout cron job:', error);
+      res.status(500).json({ error: 'Volatility cron job failed' });
     }
   });
-  
-  // Set up news monitoring every 2 minutes  
-  cron.schedule('*/2 * * * *', async () => {
+
+  // News monitoring (was: every 2 min node-cron)
+  app.get('/api/cron/news', verifyCronAuth, async (_req, res) => {
     try {
       console.log('Running news alert checks...');
-      
+
       // Get latest news and check for alerts
       const news = await FinanceService.getNews(20);
-      
+
       for (const newsItem of news) {
         try {
           const newsAlerts = await alertsEngine.checkNewsAlerts(newsItem);
@@ -3751,18 +3728,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.error('Error checking news alerts:', alertError);
         }
       }
+
+      res.json({ success: true, newsChecked: news.length });
     } catch (error) {
-      console.error('Error in news monitoring:', error);
+      console.error('Error in news cron job:', error);
+      res.status(500).json({ error: 'News cron job failed' });
     }
   });
 
-  // Clean up expired crypto market cache every hour
-  cron.schedule('0 * * * *', async () => {
+  // Clean up expired crypto market cache (was: hourly node-cron)
+  app.get('/api/cron/cache-cleanup', verifyCronAuth, async (_req, res) => {
     try {
       console.log('Cleaning up expired crypto market cache...');
       await storage.clearExpiredCryptoCache();
+      res.json({ success: true });
     } catch (error) {
       console.error('Error cleaning expired crypto cache:', error);
+      res.status(500).json({ error: 'Cache cleanup cron job failed' });
     }
   });
   
@@ -4493,6 +4475,4 @@ export async function registerRoutes(app: Express): Promise<Server> {
   console.log('Asset universe endpoints configured');
   console.log('Historical data ingestion endpoints configured');
   console.log('Options chain endpoint configured');
-  
-  return httpServer;
 }
