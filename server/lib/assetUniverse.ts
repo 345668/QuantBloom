@@ -1,5 +1,5 @@
 import { db } from '../db';
-import { assetUniverse, type InsertAssetUniverse } from '@shared/schema';
+import { assetUniverse, type InsertAssetUniverse } from '../../shared/schema';
 import { eq, sql } from 'drizzle-orm';
 
 /**

@@ -32,7 +32,7 @@ import {
   alerts,
   assetUniverse,
   cryptoMarketCache
-} from "@shared/schema";
+} from "../shared/schema";
 import { db } from "./db";
 import { eq, desc, and, or, sql } from "drizzle-orm";
 import { randomUUID } from "crypto";

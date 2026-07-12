@@ -1,5 +1,5 @@
 import { db } from '../db';
-import { historicalPrices, dataIngestionJobs, assetUniverse, type InsertHistoricalPrices, type InsertDataIngestionJob } from '@shared/schema';
+import { historicalPrices, dataIngestionJobs, assetUniverse, type InsertHistoricalPrices, type InsertDataIngestionJob } from '../../shared/schema';
 import { eq, sql, and, gte, lte, inArray } from 'drizzle-orm';
 import yahooFinance from 'yahoo-finance2';
 

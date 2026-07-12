@@ -1,4 +1,4 @@
-import type { StockQuote, CryptoQuote, Alert, AlertCondition, TriggeredAlert, NewsItem, ChartData } from "@shared/schema";
+import type { StockQuote, CryptoQuote, Alert, AlertCondition, TriggeredAlert, NewsItem, ChartData } from "../../shared/schema";
 import type { IStorage } from "../storage";
 
 export class AlertsEngine {

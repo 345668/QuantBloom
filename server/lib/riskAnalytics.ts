@@ -1,4 +1,4 @@
-import type { ChartData } from "@shared/schema";
+import type { ChartData } from "../../shared/schema";
 
 export interface PortfolioRiskMetrics {
   portfolioValue: number;

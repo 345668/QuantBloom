@@ -4313,7 +4313,6 @@ export async function registerRoutes(app: Express): Promise<void> {
   });
   
   console.log('Financial API routes registered successfully');
-  console.log('WebSocket server initialized for real-time updates');
   // Options Chain endpoint
   app.get('/api/options/:symbol', async (req, res) => {
     try {

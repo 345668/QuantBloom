@@ -1,166 +1,114 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
-interface WebSocketMessage {
+interface LiveUpdateMessage {
   type: string;
   data: any;
   timestamp: Date;
 }
 
-export function useWebSocket(url: string = '/api/ws') {
+// Polling intervals (ms)
+const MARKET_POLL_INTERVAL = 30_000; // market indices, watchlist, portfolio, crypto
+const ALERTS_POLL_INTERVAL = 60_000; // triggered alerts
+
+/**
+ * Live updates via polling.
+ *
+ * WebSockets are not supported on Vercel serverless functions, so this hook
+ * keeps data fresh by periodically invalidating the relevant React Query
+ * caches. It preserves the same public interface as the previous
+ * WebSocket-based implementation so consumers don't need to change.
+ */
+export function useWebSocket(_url: string = '/api/ws') {
   const [isConnected, setIsConnected] = useState(false);
-  const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const [lastMessage, setLastMessage] = useState<LiveUpdateMessage | null>(null);
   const queryClient = useQueryClient();
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const seenAlertIdsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    const connect = () => {
+    setIsConnected(true);
+
+    // Poll market data: indices, watchlist, portfolio, crypto
+    const marketInterval = setInterval(() => {
+      // Skip polling when the tab is hidden to save resources
+      if (document.hidden) return;
+
+      queryClient.invalidateQueries({ queryKey: ['/api/market/indices'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/watchlist'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/portfolio'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/crypto/markets'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/crypto/trending'] });
+
+      setLastMessage({
+        type: 'market_update',
+        data: null,
+        timestamp: new Date(),
+      });
+    }, MARKET_POLL_INTERVAL);
+
+    // Poll triggered alerts and surface browser notifications for new ones
+    const alertsInterval = setInterval(async () => {
+      if (document.hidden) return;
+
+      queryClient.invalidateQueries({ queryKey: ['/api/alerts'] });
+
       try {
-        // Construct WebSocket URL
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}${url}`;
-        
-        wsRef.current = new WebSocket(wsUrl);
+        const res = await fetch('/api/alerts/triggered');
+        if (!res.ok) return;
+        const triggered = await res.json();
+        if (!Array.isArray(triggered)) return;
 
-        wsRef.current.onopen = () => {
-          console.log('WebSocket connected');
-          setIsConnected(true);
-          
-          // Clear any existing reconnect timeout
-          if (reconnectTimeoutRef.current) {
-            clearTimeout(reconnectTimeoutRef.current);
-            reconnectTimeoutRef.current = null;
+        for (const item of triggered) {
+          const id = String(item?.alert?.id ?? item?.id ?? '');
+          if (!id || seenAlertIdsRef.current.has(id)) continue;
+          seenAlertIdsRef.current.add(id);
+
+          setLastMessage({
+            type: 'alert_triggered',
+            data: item,
+            timestamp: new Date(),
+          });
+
+          // Show browser notification if supported and permitted
+          if ('Notification' in window && Notification.permission === 'granted') {
+            const alert = item.alert ?? item;
+            const notification = new Notification(
+              `${String(alert.type ?? 'PRICE').toUpperCase()} Alert: ${alert.symbol ?? ''}`,
+              {
+                body: item.triggerReason ?? 'Alert condition met',
+                icon: '/favicon.ico',
+                tag: `alert-${id}`,
+                requireInteraction: true,
+              }
+            );
+            // Auto-close after 10 seconds
+            setTimeout(() => notification.close(), 10000);
+          } else if ('Notification' in window && Notification.permission !== 'denied') {
+            // Request permission for future notifications
+            Notification.requestPermission();
           }
-        };
-
-        wsRef.current.onmessage = (event) => {
-          try {
-            const message: WebSocketMessage = JSON.parse(event.data);
-            setLastMessage(message);
-            
-            // Handle different message types
-            switch (message.type) {
-              case 'market_update':
-                // Invalidate market indices query
-                queryClient.invalidateQueries({ queryKey: ['/api/market/indices'] });
-                break;
-                
-              case 'stock_update':
-                // Invalidate watchlist and portfolio queries
-                queryClient.invalidateQueries({ queryKey: ['/api/watchlist'] });
-                queryClient.invalidateQueries({ queryKey: ['/api/portfolio'] });
-                break;
-                
-              case 'crypto_update':
-                // Invalidate crypto-related queries
-                queryClient.invalidateQueries({ queryKey: ['/api/crypto/markets'] });
-                queryClient.invalidateQueries({ queryKey: ['/api/crypto/trending'] });
-                break;
-                
-              case 'crypto_trending':
-                // Invalidate crypto trending queries
-                queryClient.invalidateQueries({ queryKey: ['/api/crypto/trending'] });
-                console.log('Crypto trending data updated:', message.data);
-                break;
-                
-              case 'alert_triggered':
-                // Handle triggered alerts - show notification and update UI
-                console.log('Alert triggered:', message.data);
-                
-                // Invalidate alerts queries to update UI with latest triggered alerts
-                queryClient.invalidateQueries({ queryKey: ['/api/alerts'] });
-                queryClient.invalidateQueries({ queryKey: ['/api/alerts/triggered'] });
-                
-                // Show browser notification if supported and permitted
-                if ('Notification' in window && Notification.permission === 'granted') {
-                  const alert = message.data.alert;
-                  const notification = new Notification(`${alert.type.toUpperCase()} Alert: ${alert.symbol}`, {
-                    body: message.data.triggerReason,
-                    icon: '/favicon.ico',
-                    tag: `alert-${alert.id}`,
-                    requireInteraction: true
-                  });
-                  
-                  // Auto-close after 10 seconds
-                  setTimeout(() => notification.close(), 10000);
-                } else if ('Notification' in window && Notification.permission !== 'denied') {
-                  // Request permission for future notifications
-                  Notification.requestPermission();
-                }
-                break;
-                
-              case 'market_status':
-                // Handle market status updates
-                console.log('Market status:', message.data);
-                break;
-                
-              default:
-                console.log('Unknown message type:', message.type);
-            }
-          } catch (error) {
-            console.error('Error parsing WebSocket message:', error);
-          }
-        };
-
-        wsRef.current.onclose = (event) => {
-          console.log('WebSocket disconnected:', event.code, event.reason);
-          setIsConnected(false);
-          
-          // Attempt to reconnect after 3 seconds
-          if (!reconnectTimeoutRef.current) {
-            reconnectTimeoutRef.current = setTimeout(() => {
-              console.log('Attempting to reconnect WebSocket...');
-              connect();
-            }, 3000);
-          }
-        };
-
-        wsRef.current.onerror = (error) => {
-          console.error('WebSocket error:', error);
-          setIsConnected(false);
-        };
-
-      } catch (error) {
-        console.error('Error creating WebSocket connection:', error);
-        setIsConnected(false);
-        
-        // Retry connection after 5 seconds
-        if (!reconnectTimeoutRef.current) {
-          reconnectTimeoutRef.current = setTimeout(() => {
-            connect();
-          }, 5000);
         }
+
+        queryClient.invalidateQueries({ queryKey: ['/api/alerts/triggered'] });
+      } catch {
+        // Network hiccup; next poll will retry
       }
-    };
+    }, ALERTS_POLL_INTERVAL);
 
-    connect();
-
-    // Cleanup function
     return () => {
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
-      
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
+      clearInterval(marketInterval);
+      clearInterval(alertsInterval);
+      setIsConnected(false);
     };
-  }, [url, queryClient]);
+  }, [queryClient]);
 
-  const sendMessage = (message: any) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message));
-    } else {
-      console.warn('WebSocket is not connected');
-    }
+  const sendMessage = (_message: any) => {
+    // No-op: server push is replaced by polling in the serverless deployment
   };
 
   return {
     isConnected,
     lastMessage,
-    sendMessage
+    sendMessage,
   };
 }
