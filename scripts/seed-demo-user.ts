@@ -1,9 +1,13 @@
+import bcrypt from "bcryptjs";
 import { storage } from "../server/storage";
 
 async function seedDemoUser() {
   const existing = await storage.getUserByUsername("demo");
   if (existing) {
-    console.log("[v0] Demo user already exists:", existing.id);
+    // Reset password to the known demo credentials (idempotent re-seed)
+    const hashedPassword = await bcrypt.hash("demo123", 10);
+    await storage.updateUser(existing.id, { password: hashedPassword } as any);
+    console.log("[v0] Demo user already exists, password reset:", existing.id);
     return;
   }
 
