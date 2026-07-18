@@ -55,6 +55,27 @@ function extractSymbol(headline) {
   if (match && allSymbols.includes(match[1])) return match[1];
   return null;
 }
+var yahooAuth = null;
+async function getYahooAuth() {
+  if (yahooAuth && Date.now() < yahooAuth.expiry) return yahooAuth;
+  try {
+    const cookieResp = await fetch("https://fc.yahoo.com/", {
+      headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" }
+    });
+    const setCookie = cookieResp.headers.get("set-cookie");
+    const cookie = setCookie ? setCookie.split(";")[0] : "";
+    if (!cookie) return null;
+    const crumbResp = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", {
+      headers: { "User-Agent": "Mozilla/5.0", "Cookie": cookie }
+    });
+    const crumb = await crumbResp.text();
+    if (!crumb || crumb.includes("<")) return null;
+    yahooAuth = { cookie, crumb, expiry: Date.now() + 36e5 };
+    return yahooAuth;
+  } catch {
+    return null;
+  }
+}
 async function yahooQuote(symbol) {
   const resp = await fetch(
     `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=2d`,
@@ -977,12 +998,27 @@ app.get("/api/v1/options", async (req, res) => {
     const cacheKey = `options:${symbol}:${date}`;
     const cached = cacheGet(cacheKey);
     if (cached) return res.json(cached);
-    const url = `https://query1.finance.yahoo.com/v7/finance/options/${symbol}${date ? `?date=${date}` : ""}`;
-    const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-    if (!resp.ok) throw new Error(`Options fetch failed for ${symbol}`);
-    const data = await resp.json();
-    const chain = data.optionChain?.result?.[0];
-    if (!chain) throw new Error("No options data");
+    const empty = { symbol, expirationDates: [], currentPrice: null, calls: [], puts: [] };
+    const auth = await getYahooAuth();
+    let chain = null;
+    for (const host of ["query2.finance.yahoo.com", "query1.finance.yahoo.com"]) {
+      try {
+        const crumbParam = auth?.crumb ? `${date ? "&" : "?"}crumb=${encodeURIComponent(auth.crumb)}` : "";
+        const url = `https://${host}/v7/finance/options/${symbol}${date ? `?date=${date}` : ""}${crumbParam}`;
+        const headers = { "User-Agent": "Mozilla/5.0", "Accept": "application/json" };
+        if (auth?.cookie) headers["Cookie"] = auth.cookie;
+        const resp = await fetch(url, { headers });
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        chain = data.optionChain?.result?.[0];
+        if (chain) break;
+      } catch {
+      }
+    }
+    if (!chain) {
+      cacheSet(cacheKey, empty, 6e4);
+      return res.json(empty);
+    }
     const mapContract = (c) => ({
       strike: c.strike,
       lastPrice: c.lastPrice,
@@ -1007,7 +1043,7 @@ app.get("/api/v1/options", async (req, res) => {
     cacheSet(cacheKey, result, 12e4);
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.json({ symbol: (req.query.symbol || "AAPL").toUpperCase(), expirationDates: [], currentPrice: null, calls: [], puts: [] });
   }
 });
 var server_default = app;

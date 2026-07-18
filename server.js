@@ -81,6 +81,35 @@ function extractSymbol(headline) {
 // ---------------------------------------------------------------------------
 // Yahoo Finance helpers (using v8 chart API — no API key needed)
 // ---------------------------------------------------------------------------
+// Yahoo crumb + cookie — required by the options endpoint. Cached in-process.
+// ---------------------------------------------------------------------------
+let yahooAuth = null; // { cookie, crumb, expiry }
+
+async function getYahooAuth() {
+  if (yahooAuth && Date.now() < yahooAuth.expiry) return yahooAuth;
+  try {
+    // 1. Hit the homepage to receive a session cookie.
+    const cookieResp = await fetch('https://fc.yahoo.com/', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' },
+    });
+    const setCookie = cookieResp.headers.get('set-cookie');
+    const cookie = setCookie ? setCookie.split(';')[0] : '';
+    if (!cookie) return null;
+
+    // 2. Exchange the cookie for a crumb.
+    const crumbResp = await fetch('https://query1.finance.yahoo.com/v1/test/getcrumb', {
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Cookie': cookie },
+    });
+    const crumb = await crumbResp.text();
+    if (!crumb || crumb.includes('<')) return null;
+
+    yahooAuth = { cookie, crumb, expiry: Date.now() + 3600000 };
+    return yahooAuth;
+  } catch {
+    return null;
+  }
+}
+
 async function yahooQuote(symbol) {
   const resp = await fetch(
     `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=2d`,
@@ -1164,12 +1193,31 @@ app.get('/api/v1/options', async (req, res) => {
     const cached = cacheGet(cacheKey);
     if (cached) return res.json(cached);
 
-    const url = `https://query1.finance.yahoo.com/v7/finance/options/${symbol}${date ? `?date=${date}` : ''}`;
-    const resp = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-    if (!resp.ok) throw new Error(`Options fetch failed for ${symbol}`);
-    const data = await resp.json();
-    const chain = data.optionChain?.result?.[0];
-    if (!chain) throw new Error('No options data');
+    const empty = { symbol, expirationDates: [], currentPrice: null, calls: [], puts: [] };
+
+    // Yahoo's v7 options endpoint now often requires a crumb/cookie; try both
+    // hosts and degrade gracefully rather than returning a 500.
+    const auth = await getYahooAuth();
+    let chain = null;
+    for (const host of ['query2.finance.yahoo.com', 'query1.finance.yahoo.com']) {
+      try {
+        const crumbParam = auth?.crumb ? `${date ? '&' : '?'}crumb=${encodeURIComponent(auth.crumb)}` : '';
+        const url = `https://${host}/v7/finance/options/${symbol}${date ? `?date=${date}` : ''}${crumbParam}`;
+        const headers = { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' };
+        if (auth?.cookie) headers['Cookie'] = auth.cookie;
+        const resp = await fetch(url, { headers });
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        chain = data.optionChain?.result?.[0];
+        if (chain) break;
+      } catch { /* try next host */ }
+    }
+
+    if (!chain) {
+      // Cache briefly so we don't hammer Yahoo on every poll while it's blocked.
+      cacheSet(cacheKey, empty, 60000);
+      return res.json(empty);
+    }
 
     const mapContract = c => ({
       strike: c.strike, lastPrice: c.lastPrice, bid: c.bid, ask: c.ask,
@@ -1190,7 +1238,8 @@ app.get('/api/v1/options', async (req, res) => {
     cacheSet(cacheKey, result, 120000);
     res.json(result);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    // Never 500 the dashboard — return an empty chain the panel can render.
+    res.json({ symbol: (req.query.symbol || 'AAPL').toUpperCase(), expirationDates: [], currentPrice: null, calls: [], puts: [] });
   }
 });
 
