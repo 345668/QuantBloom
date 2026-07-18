@@ -13,7 +13,7 @@
     "check": "tsc",
     "db:push": "drizzle-kit push",
     "db:seed": "tsx scripts/seed-demo-user.ts",
-    "vercel-build": "drizzle-kit push && tsx scripts/seed-demo-user.ts && vite build"
+    "vercel-build": "drizzle-kit push --force && tsx scripts/seed-demo-user.ts && vite build"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
