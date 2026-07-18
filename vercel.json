@@ -3,9 +3,11 @@
   "buildCommand": "npm run vercel-build",
   "outputDirectory": "dist/public",
   "framework": null,
+  "installCommand": "pnpm install",
   "functions": {
     "api/index.ts": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "includeFiles": "server/**/*.ts,shared/**/*.ts,drizzle.config.ts"
     }
   },
   "rewrites": [
