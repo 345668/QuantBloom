@@ -1,9 +1,9 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "npm run vercel-build",
-  "outputDirectory": "dist/public",
-  "framework": null,
+  "buildCommand": "vite build --config vite.config.local.js",
+  "outputDirectory": "dist",
   "installCommand": "pnpm install",
+  "framework": null,
   "functions": {
     "api/index.js": {
       "maxDuration": 60
@@ -12,11 +12,5 @@
   "rewrites": [
     { "source": "/api/:path*", "destination": "/api" },
     { "source": "/:path((?!api).*)", "destination": "/index.html" }
-  ],
-  "crons": [
-    { "path": "/api/cron/market", "schedule": "* * * * *" },
-    { "path": "/api/cron/news", "schedule": "*/2 * * * *" },
-    { "path": "/api/cron/volatility", "schedule": "*/5 * * * *" },
-    { "path": "/api/cron/cache-cleanup", "schedule": "0 * * * *" }
   ]
 }

@@ -669,6 +669,13 @@ app.get('/api/v1/fred/series/:id', async (req, res) => {
   }
 });
 
-app.listen(port, () => {
-  console.log(`Bloomberg Terminal API running on http://localhost:${port}`);
-});
+// Export for Vercel serverless
+export default app;
+
+// Only listen when run directly (not imported as module)
+const isDirectRun = process.argv[1] && (process.argv[1].endsWith('server.js') || process.argv[1].endsWith('server'));
+if (isDirectRun) {
+  app.listen(port, () => {
+    console.log(`Bloomberg Terminal API running on http://localhost:${port}`);
+  });
+}
