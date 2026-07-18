@@ -669,6 +669,531 @@ app.get('/api/v1/fred/series/:id', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// GET /api/v1/profile?symbol=AAPL — Company profile
+// ---------------------------------------------------------------------------
+app.get('/api/v1/profile', async (req, res) => {
+  try {
+    const symbol = (req.query.symbol || 'AAPL').toUpperCase();
+    const cacheKey = `profile:${symbol}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const [finnhubData, yahooData] = await Promise.all([
+      finnhubFetch(`/stock/profile2?symbol=${symbol}`),
+      yahooQuote(symbol).catch(() => null),
+    ]);
+
+    const result = {
+      symbol,
+      name: finnhubData?.name || yahooData?.name || symbol,
+      logo: finnhubData?.logo || null,
+      industry: finnhubData?.finnhubIndustry || null,
+      sector: finnhubData?.finnhubIndustry || null,
+      country: finnhubData?.country || null,
+      exchange: finnhubData?.exchange || null,
+      marketCap: finnhubData?.marketCapitalization ? finnhubData.marketCapitalization * 1e6 : null,
+      shareOutstanding: finnhubData?.shareOutstanding || null,
+      ipo: finnhubData?.ipo || null,
+      weburl: finnhubData?.weburl || null,
+      phone: finnhubData?.phone || null,
+      price: yahooData?.price || null,
+      change: yahooData?.change || null,
+      changePercent: yahooData?.changePercent || null,
+      volume: yahooData?.volume || null,
+    };
+
+    cacheSet(cacheKey, result, 3600000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/analyst?symbol=AAPL — Analyst recommendations
+// ---------------------------------------------------------------------------
+app.get('/api/v1/analyst', async (req, res) => {
+  try {
+    const symbol = (req.query.symbol || 'AAPL').toUpperCase();
+    const cacheKey = `analyst:${symbol}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const data = await finnhubFetch(`/stock/recommendation?symbol=${symbol}`);
+    const result = {
+      symbol,
+      recommendations: (data || []).slice(0, 4).map(r => ({
+        period: r.period,
+        strongBuy: r.strongBuy,
+        buy: r.buy,
+        hold: r.hold,
+        sell: r.sell,
+        strongSell: r.strongSell,
+      })),
+    };
+
+    cacheSet(cacheKey, result, 21600000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/crypto — Top crypto prices
+// ---------------------------------------------------------------------------
+app.get('/api/v1/crypto', async (req, res) => {
+  try {
+    const cacheKey = 'crypto:top';
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const cryptoSymbols = ['BTC-USD', 'ETH-USD', 'BNB-USD', 'SOL-USD', 'XRP-USD', 'ADA-USD', 'DOGE-USD', 'DOT-USD', 'AVAX-USD', 'MATIC-USD'];
+    const results = await Promise.allSettled(
+      cryptoSymbols.map(s => yahooQuote(s))
+    );
+
+    const cryptos = results
+      .filter(r => r.status === 'fulfilled')
+      .map(r => {
+        const q = r.value;
+        return {
+          symbol: q.symbol.replace('-USD', ''),
+          name: q.name || q.symbol.replace('-USD', ''),
+          price: q.price,
+          change: q.change,
+          changePercent: q.changePercent,
+          volume: q.volume,
+        };
+      });
+
+    cacheSet(cacheKey, cryptos, 30000);
+    res.json(cryptos);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/forex — Forex pairs & commodity prices
+// ---------------------------------------------------------------------------
+app.get('/api/v1/forex', async (req, res) => {
+  try {
+    const cacheKey = 'forex:all';
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const forexSymbols = ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'USDCHF=X', 'AUDUSD=X', 'USDCAD=X', 'NZDUSD=X'];
+    const commoditySymbols = ['GC=F', 'SI=F', 'CL=F', 'NG=F', 'HG=F'];
+
+    const [forexResults, commodityResults] = await Promise.all([
+      Promise.allSettled(forexSymbols.map(s => yahooQuote(s))),
+      Promise.allSettled(commoditySymbols.map(s => yahooQuote(s))),
+    ]);
+
+    const nameMap = {
+      'EURUSD=X': 'EUR/USD', 'GBPUSD=X': 'GBP/USD', 'USDJPY=X': 'USD/JPY',
+      'USDCHF=X': 'USD/CHF', 'AUDUSD=X': 'AUD/USD', 'USDCAD=X': 'USD/CAD', 'NZDUSD=X': 'NZD/USD',
+      'GC=F': 'Gold', 'SI=F': 'Silver', 'CL=F': 'Crude Oil WTI', 'NG=F': 'Natural Gas', 'HG=F': 'Copper',
+    };
+
+    const mapQuote = r => {
+      if (r.status !== 'fulfilled') return null;
+      const q = r.value;
+      return { symbol: q.symbol, name: nameMap[q.symbol] || q.name, price: q.price, change: q.change, changePercent: q.changePercent };
+    };
+
+    const result = {
+      forex: forexResults.map(mapQuote).filter(Boolean),
+      commodities: commodityResults.map(mapQuote).filter(Boolean),
+    };
+
+    cacheSet(cacheKey, result, 60000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/fundamentals?symbol=AAPL — Company fundamentals
+// ---------------------------------------------------------------------------
+app.get('/api/v1/fundamentals', async (req, res) => {
+  try {
+    const symbol = (req.query.symbol || 'AAPL').toUpperCase();
+    const cacheKey = `fundamentals:${symbol}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const data = await finnhubFetch(`/stock/metric?symbol=${symbol}&metric=all`);
+    const m = data?.metric || {};
+
+    const result = {
+      symbol,
+      valuation: {
+        peRatio: m['peBasicExclExtraTTM'] || m['peTTM'] || null,
+        pbRatio: m['pbAnnual'] || null,
+        psRatio: m['psAnnual'] || null,
+        evToEbitda: m['enterpriseValueOverEBITDATTM'] || null,
+        marketCap: m['marketCapitalization'] || null,
+      },
+      profitability: {
+        roeTTM: m['roeTTM'] || null,
+        roaTTM: m['roaTTM'] || null,
+        grossMarginTTM: m['grossMarginTTM'] || null,
+        operatingMarginTTM: m['operatingMarginTTM'] || null,
+        netMarginTTM: m['netProfitMarginTTM'] || null,
+      },
+      growth: {
+        revenueGrowthTTM: m['revenueGrowthTTMYoy'] || null,
+        epsGrowthTTM: m['epsGrowthTTMYoy'] || null,
+        revenueGrowth3Y: m['revenueGrowth3Y'] || null,
+        epsGrowth3Y: m['epsGrowth3Y'] || null,
+      },
+      balanceSheet: {
+        totalDebtToEquity: m['totalDebt/totalEquityAnnual'] || null,
+        currentRatio: m['currentRatioAnnual'] || null,
+        quickRatio: m['quickRatioAnnual'] || null,
+      },
+      dividends: {
+        dividendYield: m['dividendYieldIndicatedAnnual'] || null,
+        dividendPerShare: m['dividendPerShareAnnual'] || null,
+        payoutRatio: m['payoutRatioAnnual'] || null,
+      },
+      trading: {
+        week52High: m['52WeekHigh'] || null,
+        week52Low: m['52WeekLow'] || null,
+        week52HighDate: m['52WeekHighDate'] || null,
+        week52LowDate: m['52WeekLowDate'] || null,
+        beta: m['beta'] || null,
+        avgVolume10d: m['10DayAverageTradingVolume'] || null,
+        avgVolume3m: m['3MonthAverageTradingVolume'] || null,
+      },
+    };
+
+    cacheSet(cacheKey, result, 14400000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/earnings?from=YYYY-MM-DD&to=YYYY-MM-DD — Earnings calendar
+// ---------------------------------------------------------------------------
+app.get('/api/v1/earnings', async (req, res) => {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const weekOut = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+    const from = req.query.from || today;
+    const to = req.query.to || weekOut;
+    const cacheKey = `earnings:${from}:${to}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const data = await finnhubFetch(`/calendar/earnings?from=${from}&to=${to}`);
+    const result = (data?.earningsCalendar || []).map(e => ({
+      symbol: e.symbol,
+      date: e.date,
+      hour: e.hour,
+      epsEstimate: e.epsEstimate,
+      epsActual: e.epsActual,
+      revenueEstimate: e.revenueEstimate,
+      revenueActual: e.revenueActual,
+      quarter: e.quarter,
+      year: e.year,
+    }));
+
+    cacheSet(cacheKey, result, 3600000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/ipo?from=YYYY-MM-DD&to=YYYY-MM-DD — IPO calendar
+// ---------------------------------------------------------------------------
+app.get('/api/v1/ipo', async (req, res) => {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const monthOut = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+    const from = req.query.from || today;
+    const to = req.query.to || monthOut;
+    const cacheKey = `ipo:${from}:${to}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const data = await finnhubFetch(`/calendar/ipo?from=${from}&to=${to}`);
+    const result = (data?.ipoCalendar || []).map(i => ({
+      symbol: i.symbol || null,
+      name: i.name,
+      date: i.date,
+      exchange: i.exchange || null,
+      priceRangeLow: i.priceRangeLow || null,
+      priceRangeHigh: i.priceRangeHigh || null,
+      numberOfShares: i.numberOfShares || null,
+      totalSharesValue: i.totalSharesValue || null,
+      status: i.status || 'expected',
+    }));
+
+    cacheSet(cacheKey, result, 7200000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/technical?symbol=AAPL&resolution=D — Technical analysis
+// ---------------------------------------------------------------------------
+app.get('/api/v1/technical', async (req, res) => {
+  try {
+    const symbol = (req.query.symbol || 'AAPL').toUpperCase();
+    const resolution = req.query.resolution || 'D';
+    const cacheKey = `technical:${symbol}:${resolution}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const data = await finnhubFetch(`/scan/technical-indicator?symbol=${symbol}&resolution=${resolution}`);
+    const candles = await yahooCandles(symbol, '1d', '3mo').catch(() => []);
+
+    let support = null, resistance = null;
+    if (candles.length > 20) {
+      const lows = candles.slice(-20).map(c => c.low);
+      const highs = candles.slice(-20).map(c => c.high);
+      support = Math.min(...lows);
+      resistance = Math.max(...highs);
+    }
+
+    const result = {
+      symbol,
+      resolution,
+      technicalAnalysis: data?.technicalAnalysis || {},
+      trend: data?.trend || {},
+      support,
+      resistance,
+      candleCount: candles.length,
+    };
+
+    cacheSet(cacheKey, result, 300000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/screener?sector=Technology&minPE=0&maxPE=30 — Stock screener
+// ---------------------------------------------------------------------------
+app.get('/api/v1/screener', async (req, res) => {
+  try {
+    const { sector, minPE, maxPE, minChange, maxChange } = req.query;
+    const cacheKey = `screener:${sector || 'all'}:${minPE || ''}:${maxPE || ''}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    let symbols = [];
+    if (sector && HEATMAP_CONSTITUENTS[sector]) {
+      symbols = HEATMAP_CONSTITUENTS[sector];
+    } else {
+      symbols = Object.values(HEATMAP_CONSTITUENTS).flat();
+    }
+
+    const results = await Promise.allSettled(symbols.map(s => yahooQuote(s)));
+    let stocks = results
+      .filter(r => r.status === 'fulfilled')
+      .map(r => r.value);
+
+    if (minChange) stocks = stocks.filter(s => s.changePercent >= parseFloat(minChange));
+    if (maxChange) stocks = stocks.filter(s => s.changePercent <= parseFloat(maxChange));
+
+    stocks.sort((a, b) => (b.changePercent || 0) - (a.changePercent || 0));
+
+    cacheSet(cacheKey, stocks, 300000);
+    res.json(stocks);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/sectors?period=3mo — Sector ETF performance
+// ---------------------------------------------------------------------------
+app.get('/api/v1/sectors', async (req, res) => {
+  try {
+    const period = req.query.period || '3mo';
+    const cacheKey = `sectors:${period}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const sectorETFs = {
+      'Technology': 'XLK', 'Financial': 'XLF', 'Healthcare': 'XLV',
+      'Energy': 'XLE', 'Consumer Discretionary': 'XLY', 'Consumer Staples': 'XLP',
+      'Industrials': 'XLI', 'Materials': 'XLB', 'Real Estate': 'XLRE',
+      'Utilities': 'XLU', 'Communication': 'XLC',
+    };
+
+    const spyResult = await yahooCandles('SPY', '1d', period).catch(() => []);
+    const spyStart = spyResult[0]?.close || 1;
+    const spyEnd = spyResult[spyResult.length - 1]?.close || spyStart;
+    const spyReturn = ((spyEnd - spyStart) / spyStart) * 100;
+
+    const entries = Object.entries(sectorETFs);
+    const results = await Promise.allSettled(
+      entries.map(([, etf]) => yahooCandles(etf, '1d', period))
+    );
+
+    const sectors = entries.map(([name, etf], i) => {
+      const r = results[i];
+      if (r.status !== 'fulfilled' || r.value.length < 2) {
+        return { name, etf, performance: 0, relativeStrength: 0 };
+      }
+      const candles = r.value;
+      const startPrice = candles[0].close;
+      const endPrice = candles[candles.length - 1].close;
+      const performance = ((endPrice - startPrice) / startPrice) * 100;
+      return {
+        name, etf, performance: +performance.toFixed(2),
+        relativeStrength: +(performance - spyReturn).toFixed(2),
+      };
+    });
+
+    sectors.sort((a, b) => b.performance - a.performance);
+    const result = { period, spyReturn: +spyReturn.toFixed(2), sectors };
+
+    cacheSet(cacheKey, result, 600000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/risk?symbols=AAPL,MSFT,GOOGL — Portfolio risk analytics
+// ---------------------------------------------------------------------------
+app.get('/api/v1/risk', async (req, res) => {
+  try {
+    const symbols = (req.query.symbols || 'AAPL,MSFT,GOOGL').split(',').map(s => s.trim().toUpperCase());
+    const cacheKey = `risk:${symbols.join(',')}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const [spyCandles, ...stockCandles] = await Promise.all([
+      yahooCandles('SPY', '1d', '1y'),
+      ...symbols.map(s => yahooCandles(s, '1d', '1y').catch(() => [])),
+    ]);
+
+    const calcReturns = (candles) => {
+      const returns = [];
+      for (let i = 1; i < candles.length; i++) {
+        if (candles[i].close && candles[i-1].close) {
+          returns.push((candles[i].close - candles[i-1].close) / candles[i-1].close);
+        }
+      }
+      return returns;
+    };
+
+    const spyReturns = calcReturns(spyCandles);
+    const mean = arr => arr.reduce((s, v) => s + v, 0) / arr.length;
+    const stdDev = arr => { const m = mean(arr); return Math.sqrt(arr.reduce((s, v) => s + (v - m) ** 2, 0) / arr.length); };
+
+    let portfolioReturns = new Array(spyReturns.length).fill(0);
+    const weight = 1 / symbols.length;
+    const stockStats = [];
+
+    for (let si = 0; si < symbols.length; si++) {
+      const returns = calcReturns(stockCandles[si]);
+      if (returns.length === 0) continue;
+      const minLen = Math.min(returns.length, spyReturns.length);
+      for (let i = 0; i < minLen; i++) portfolioReturns[i] += returns[i] * weight;
+
+      const covariance = (() => {
+        const mr = mean(returns.slice(0, minLen));
+        const ms = mean(spyReturns.slice(0, minLen));
+        return returns.slice(0, minLen).reduce((s, v, i) => s + (v - mr) * (spyReturns[i] - ms), 0) / minLen;
+      })();
+      const spyVar = (() => { const m = mean(spyReturns.slice(0, minLen)); return spyReturns.slice(0, minLen).reduce((s, v) => s + (v - m) ** 2, 0) / minLen; })();
+      const beta = spyVar ? covariance / spyVar : 1;
+
+      stockStats.push({ symbol: symbols[si], beta: +beta.toFixed(2), volatility: +(stdDev(returns) * Math.sqrt(252) * 100).toFixed(2) });
+    }
+
+    portfolioReturns = portfolioReturns.filter(r => r !== 0);
+    const portVol = stdDev(portfolioReturns) * Math.sqrt(252) * 100;
+    const portReturn = mean(portfolioReturns) * 252 * 100;
+    const sharpe = portVol ? (portReturn - 4.5) / portVol : 0;
+
+    let maxDD = 0, peak = 1;
+    let cumulative = 1;
+    for (const r of portfolioReturns) {
+      cumulative *= (1 + r);
+      if (cumulative > peak) peak = cumulative;
+      const dd = (peak - cumulative) / peak;
+      if (dd > maxDD) maxDD = dd;
+    }
+
+    const portfolioBeta = stockStats.reduce((s, st) => s + st.beta, 0) / (stockStats.length || 1);
+
+    const result = {
+      symbols,
+      portfolioBeta: +portfolioBeta.toFixed(2),
+      sharpeRatio: +sharpe.toFixed(2),
+      volatility: +portVol.toFixed(2),
+      maxDrawdown: +(maxDD * 100).toFixed(2),
+      annualizedReturn: +portReturn.toFixed(2),
+      stocks: stockStats,
+    };
+
+    cacheSet(cacheKey, result, 900000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/options?symbol=AAPL — Options chain
+// ---------------------------------------------------------------------------
+app.get('/api/v1/options', async (req, res) => {
+  try {
+    const symbol = (req.query.symbol || 'AAPL').toUpperCase();
+    const date = req.query.date || '';
+    const cacheKey = `options:${symbol}:${date}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const url = `https://query1.finance.yahoo.com/v7/finance/options/${symbol}${date ? `?date=${date}` : ''}`;
+    const resp = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    if (!resp.ok) throw new Error(`Options fetch failed for ${symbol}`);
+    const data = await resp.json();
+    const chain = data.optionChain?.result?.[0];
+    if (!chain) throw new Error('No options data');
+
+    const mapContract = c => ({
+      strike: c.strike, lastPrice: c.lastPrice, bid: c.bid, ask: c.ask,
+      change: c.change, percentChange: c.percentChange, volume: c.volume || 0,
+      openInterest: c.openInterest || 0, impliedVolatility: c.impliedVolatility,
+      inTheMoney: c.inTheMoney, expiration: c.expiration,
+      contractSymbol: c.contractSymbol,
+    });
+
+    const result = {
+      symbol,
+      expirationDates: chain.expirations || [],
+      currentPrice: chain.quote?.regularMarketPrice || null,
+      calls: (chain.options?.[0]?.calls || []).map(mapContract),
+      puts: (chain.options?.[0]?.puts || []).map(mapContract),
+    };
+
+    cacheSet(cacheKey, result, 120000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Export for Vercel serverless
 export default app;
 

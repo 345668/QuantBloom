@@ -69,7 +69,7 @@ a { text-decoration: none; color: inherit; }
 
 /* --- Terminal Shell --- */
 .terminal {
-  max-width: 1600px;
+  max-width: 1920px;
   margin: 0 auto;
   padding: 0;
 }
@@ -942,4 +942,568 @@ a { text-decoration: none; color: inherit; }
     right: 10px;
     width: auto;
   }
+  .dashboard-row { grid-template-columns: 1fr !important; }
+  .row-hero .col-wide { min-height: 300px; }
+}
+
+/* =========================================================================
+   New Panel Layout System
+   ========================================================================= */
+.dashboard-row {
+  display: grid;
+  gap: 1px;
+  border: 1px solid var(--border);
+  margin-bottom: 1px;
+}
+.row-hero {
+  grid-template-columns: 2fr 1fr;
+}
+.row-3col {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+.row-4col {
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+}
+.col-wide { min-height: 400px; }
+.col-side { display: flex; flex-direction: column; gap: 1px; }
+.col-stack { display: flex; flex-direction: column; gap: 1px; }
+
+/* --- Generic Panel --- */
+.panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  padding: 10px;
+  overflow-y: auto;
+  max-height: 500px;
+}
+.panel-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.panel-badge {
+  font-size: 9px;
+  padding: 1px 6px;
+  border: 1px solid var(--accent-blue);
+  color: var(--accent-blue);
+  border-radius: 2px;
+  letter-spacing: 0.1em;
+}
+.panel-empty {
+  color: var(--text-dim);
+  text-align: center;
+  padding: 20px 0;
+  font-size: 11px;
+}
+.panel-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.tab-btn {
+  padding: 3px 10px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  transition: all 0.15s;
+}
+.tab-btn.active {
+  background: var(--text-primary);
+  color: var(--bg-primary);
+  border-color: var(--text-primary);
+}
+.sub-title {
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 8px 0 4px;
+}
+.positive { color: var(--accent-up); }
+.negative { color: var(--accent-down); }
+
+/* --- Company Profile --- */
+.company-logo {
+  width: 20px;
+  height: 20px;
+  border-radius: 2px;
+  margin-right: 6px;
+}
+.profile-price {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.profile-price-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.profile-change { font-size: 12px; font-weight: 600; }
+.profile-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+.profile-item {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--border);
+}
+.profile-label { color: var(--text-dim); font-size: 10px; }
+.profile-value { color: var(--text-body); font-size: 10px; font-weight: 600; }
+.profile-link {
+  display: block;
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--accent-blue);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Analyst Panel --- */
+.analyst-consensus {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.consensus-label {
+  font-size: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+.consensus-count { font-size: 10px; color: var(--text-dim); }
+.analyst-bar {
+  display: flex;
+  height: 20px;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 6px;
+}
+.bar-segment {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+  min-width: 18px;
+}
+.bar-strong-buy, .dot.bar-strong-buy { background: #00aa44; }
+.bar-buy, .dot.bar-buy { background: #66cc66; }
+.bar-hold, .dot.bar-hold { background: #ffaa00; }
+.bar-sell, .dot.bar-sell { background: #ee6644; }
+.bar-strong-sell, .dot.bar-strong-sell { background: #cc2200; }
+.analyst-legend {
+  display: flex;
+  gap: 10px;
+  font-size: 9px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.legend-item { display: flex; align-items: center; gap: 3px; }
+.dot { width: 8px; height: 8px; border-radius: 1px; display: inline-block; }
+.analyst-history { margin-top: 4px; }
+.history-row {
+  display: flex;
+  gap: 10px;
+  font-size: 10px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--border);
+}
+.history-period { color: var(--text-dim); flex: 1; }
+
+/* --- Crypto Panel --- */
+.crypto-list { display: flex; flex-direction: column; }
+.crypto-row {
+  display: grid;
+  grid-template-columns: 20px 50px 1fr 80px 60px;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.crypto-rank { color: var(--text-dim); text-align: center; }
+.crypto-symbol { color: var(--text-primary); font-weight: 700; }
+.crypto-name { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crypto-price { text-align: right; font-weight: 600; }
+.crypto-change { text-align: right; font-weight: 600; font-size: 10px; }
+
+/* --- Forex Panel --- */
+.forex-list { display: flex; flex-direction: column; }
+.forex-row {
+  display: grid;
+  grid-template-columns: 1fr 80px 60px;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.forex-name { color: var(--text-body); font-weight: 600; }
+.forex-price { text-align: right; color: var(--text-primary); font-weight: 600; }
+.forex-change { text-align: right; font-weight: 600; font-size: 10px; }
+
+/* --- Fundamentals Panel --- */
+.metrics-list { display: flex; flex-direction: column; }
+.metric-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.metric-label { color: var(--text-secondary); }
+.metric-value { color: var(--text-primary); font-weight: 600; }
+
+/* --- Earnings Panel --- */
+.earnings-list { display: flex; flex-direction: column; gap: 6px; }
+.earnings-date-header {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--border-bright);
+}
+.earnings-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 2px 0;
+  font-size: 11px;
+}
+.earnings-symbol { color: var(--text-primary); font-weight: 700; width: 50px; }
+.earnings-time { color: var(--text-dim); font-size: 9px; width: 30px; }
+.earnings-est { color: var(--text-secondary); }
+.earnings-actual { font-weight: 600; }
+
+/* --- IPO Panel --- */
+.ipo-list { display: flex; flex-direction: column; gap: 4px; }
+.ipo-row {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+.ipo-main {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 2px;
+}
+.ipo-name { font-size: 11px; color: var(--text-body); font-weight: 600; }
+.ipo-symbol { font-size: 10px; color: var(--text-primary); }
+.ipo-details {
+  display: flex;
+  gap: 10px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+.ipo-date { color: var(--text-secondary); }
+.ipo-price { color: var(--accent-up); }
+.ipo-status {
+  font-size: 9px;
+  text-transform: uppercase;
+  padding: 0 4px;
+  border-radius: 2px;
+  border: 1px solid var(--border);
+}
+.status-expected { color: var(--accent-blue); border-color: var(--accent-blue); }
+.status-priced { color: var(--accent-up); border-color: var(--accent-up); }
+.status-withdrawn { color: var(--accent-down); border-color: var(--accent-down); }
+
+/* --- Technical Analysis Panel --- */
+.ta-signal-box {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+.ta-signal-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
+.ta-signal-value { font-size: 16px; font-weight: 700; }
+.ta-levels {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.ta-level {
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 6px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  font-size: 11px;
+}
+.ta-indicators { display: flex; flex-direction: column; }
+.ta-indicator-row {
+  display: grid;
+  grid-template-columns: 1fr 60px 50px;
+  gap: 6px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.ta-ind-name { color: var(--text-secondary); }
+.ta-ind-value { text-align: right; color: var(--text-body); }
+.ta-ind-signal { text-align: right; font-weight: 700; font-size: 9px; }
+
+/* --- Screener Panel --- */
+.screener-filter { margin-bottom: 8px; }
+.screener-select {
+  width: 100%;
+  padding: 4px 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-body);
+  font-family: inherit;
+  font-size: 11px;
+}
+.screener-table-wrap { overflow-x: auto; }
+.screener-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.screener-table th {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-bright);
+  color: var(--text-dim);
+  font-size: 9px;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.screener-table td {
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--border);
+}
+.screener-symbol { color: var(--text-primary); font-weight: 700; }
+
+/* --- Sector Analysis Panel --- */
+.period-selector {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.period-btn {
+  padding: 2px 8px;
+  font-size: 10px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.period-btn.active {
+  background: var(--text-primary);
+  color: var(--bg-primary);
+  border-color: var(--text-primary);
+}
+.sector-bars { display: flex; flex-direction: column; gap: 4px; }
+.sector-bar-row {
+  display: grid;
+  grid-template-columns: 120px 1fr 60px;
+  gap: 6px;
+  align-items: center;
+  font-size: 10px;
+}
+.sector-bar-name { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sector-bar-track {
+  height: 12px;
+  background: var(--bg-secondary);
+  border-radius: 1px;
+  overflow: hidden;
+}
+.sector-bar-fill {
+  height: 100%;
+  border-radius: 1px;
+  transition: width 0.3s;
+}
+.sector-bar-fill.positive { background: var(--accent-up); }
+.sector-bar-fill.negative { background: var(--accent-down); }
+.sector-bar-value { text-align: right; font-weight: 600; font-size: 10px; }
+.sector-spy {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--text-dim);
+  text-align: right;
+}
+.sector-rankings { display: flex; flex-direction: column; }
+.ranking-row {
+  display: grid;
+  grid-template-columns: 20px 1fr 40px 55px 65px;
+  gap: 4px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 10px;
+  align-items: center;
+}
+.ranking-pos { color: var(--text-dim); text-align: center; }
+.ranking-name { color: var(--text-body); }
+.ranking-etf { color: var(--text-dim); }
+.ranking-perf { text-align: right; font-weight: 600; }
+.ranking-rs { text-align: right; font-size: 9px; }
+
+/* --- Risk Analytics Panel --- */
+.risk-stats-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.risk-stat {
+  padding: 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  text-align: center;
+}
+.risk-stat-label {
+  display: block;
+  font-size: 9px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.risk-stat-value {
+  display: block;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.risk-stat-level {
+  display: block;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  margin-top: 2px;
+}
+.risk-stocks { margin-top: 4px; }
+.risk-stock-row {
+  display: flex;
+  gap: 12px;
+  font-size: 10px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+.risk-stock-symbol { color: var(--text-primary); font-weight: 700; width: 50px; }
+
+/* --- Alerts Panel --- */
+.alert-add-btn {
+  font-size: 10px;
+  padding: 2px 8px;
+  background: var(--accent-up);
+  color: #fff;
+  border-radius: 2px;
+  font-weight: 700;
+}
+.alert-form {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.alert-input {
+  flex: 1;
+  padding: 4px 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-body);
+}
+.alert-select {
+  padding: 4px 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text-body);
+  font-family: inherit;
+}
+.alert-submit {
+  padding: 4px 10px;
+  background: var(--accent-blue);
+  color: #fff;
+  border-radius: 2px;
+  font-weight: 700;
+  font-size: 10px;
+}
+.alerts-list { display: flex; flex-direction: column; }
+.alert-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.alert-symbol { color: var(--text-primary); font-weight: 700; width: 50px; }
+.alert-condition { color: var(--text-body); flex: 1; }
+.alert-remove {
+  color: var(--accent-down);
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.alert-time { color: var(--text-dim); font-size: 10px; }
+.alert-row.triggered { opacity: 0.7; }
+.alert-clear {
+  font-size: 9px;
+  color: var(--accent-down);
+  padding: 2px 0;
+  margin-bottom: 4px;
+}
+
+/* --- Options Panel --- */
+.options-spot {
+  font-size: 11px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+.options-table-wrap { overflow-x: auto; }
+.options-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+}
+.options-table th {
+  text-align: right;
+  padding: 3px 5px;
+  border-bottom: 1px solid var(--border-bright);
+  color: var(--text-dim);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+.options-table th:first-child { text-align: left; }
+.options-table td {
+  text-align: right;
+  padding: 2px 5px;
+  border-bottom: 1px solid var(--border);
+}
+.options-table td:first-child { text-align: left; }
+.options-strike { color: var(--text-primary); font-weight: 700; }
+tr.itm { background: rgba(0, 204, 68, 0.06); }
+
+/* --- Responsive: medium screens --- */
+@media (max-width: 1200px) {
+  .row-4col { grid-template-columns: 1fr 1fr; }
+  .row-hero { grid-template-columns: 1fr; }
+  .row-3col { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 768px) {
+  .row-3col, .row-4col, .row-hero { grid-template-columns: 1fr; }
+  .crypto-row { grid-template-columns: 20px 45px 1fr 60px 50px; font-size: 10px; }
+  .ranking-row { grid-template-columns: 20px 1fr 40px 50px; }
+  .ranking-rs { display: none; }
 }

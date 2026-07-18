@@ -3,10 +3,23 @@ import { DashboardProvider, useDashboard } from './context/DashboardContext.jsx'
 import TickerBar from './components/TickerBar.jsx';
 import WatchlistModal from './components/WatchlistModal.jsx';
 import ChartPanel from './components/ChartPanel.jsx';
+import CompanyProfile from './components/CompanyProfile.jsx';
+import AnalystPanel from './components/AnalystPanel.jsx';
 import NewsFeedPanel from './components/NewsFeedPanel.jsx';
 import HeatmapPanel from './components/HeatmapPanel.jsx';
 import CalendarPanel from './components/CalendarPanel.jsx';
 import FredPanel from './components/FredPanel.jsx';
+import CryptoPanel from './components/CryptoPanel.jsx';
+import ForexPanel from './components/ForexPanel.jsx';
+import FundamentalsPanel from './components/FundamentalsPanel.jsx';
+import EarningsPanel from './components/EarningsPanel.jsx';
+import IpoPanel from './components/IpoPanel.jsx';
+import TechnicalPanel from './components/TechnicalPanel.jsx';
+import ScreenerPanel from './components/ScreenerPanel.jsx';
+import SectorPanel from './components/SectorPanel.jsx';
+import RiskPanel from './components/RiskPanel.jsx';
+import AlertsPanel from './components/AlertsPanel.jsx';
+import OptionsPanel from './components/OptionsPanel.jsx';
 
 function Dashboard() {
   const { state, dispatch } = useDashboard();
@@ -31,23 +44,15 @@ function Dashboard() {
       {/* Nav Bar */}
       <nav className="nav-bar">
         <div className="nav-left">
-          <span className="terminal-logo">TERMINAL</span>
-          <button
-            className="nav-btn watchlist-btn"
-            onClick={() => setShowWatchlist(true)}
-          >
-            WATCHLIST
-          </button>
+          <span className="terminal-logo">BLOOMBERG TERMINAL</span>
+          <button className="nav-btn watchlist-btn" onClick={() => setShowWatchlist(true)}>WATCHLIST</button>
         </div>
         <div className="nav-right">
           <button
             className="theme-toggle"
-            onClick={() => dispatch({
-              type: 'SET_THEME',
-              payload: state.theme === 'dark' ? 'light' : 'dark'
-            })}
+            onClick={() => dispatch({ type: 'SET_THEME', payload: state.theme === 'dark' ? 'light' : 'dark' })}
           >
-            {state.theme === 'dark' ? 'LIGHT MODE' : 'DARK MODE'}
+            {state.theme === 'dark' ? 'LIGHT' : 'DARK'}
           </button>
           <span className="nav-clock">{clock}</span>
         </div>
@@ -56,27 +61,50 @@ function Dashboard() {
       {/* Ticker Bar */}
       <TickerBar />
 
-      {/* Main Grid */}
-      <div className="dashboard-grid">
-        <div className="grid-left">
-          <ChartPanel />
-        </div>
-        <div className="grid-right">
-          <NewsFeedPanel />
-          <HeatmapPanel />
+      {/* Row 1: Chart + Profile + Analyst */}
+      <div className="dashboard-row row-hero">
+        <div className="col-wide"><ChartPanel /></div>
+        <div className="col-side">
+          <CompanyProfile />
+          <AnalystPanel />
         </div>
       </div>
 
-      {/* Bottom Row: FRED + Calendar side by side */}
-      <div className="bottom-grid">
+      {/* Row 2: News + Heatmap + Forex/Crypto */}
+      <div className="dashboard-row row-3col">
+        <NewsFeedPanel />
+        <HeatmapPanel />
+        <div className="col-stack">
+          <ForexPanel />
+          <CryptoPanel />
+        </div>
+      </div>
+
+      {/* Row 3: FRED + Calendar + Earnings + IPO */}
+      <div className="dashboard-row row-4col">
         <FredPanel />
         <CalendarPanel />
+        <EarningsPanel />
+        <IpoPanel />
+      </div>
+
+      {/* Row 4: Technical + Fundamentals + Sector + Screener */}
+      <div className="dashboard-row row-4col">
+        <TechnicalPanel />
+        <FundamentalsPanel />
+        <SectorPanel />
+        <ScreenerPanel />
+      </div>
+
+      {/* Row 5: Options + Risk + Alerts */}
+      <div className="dashboard-row row-3col">
+        <OptionsPanel />
+        <RiskPanel />
+        <AlertsPanel />
       </div>
 
       {/* Watchlist Modal */}
-      {showWatchlist && (
-        <WatchlistModal onClose={() => setShowWatchlist(false)} />
-      )}
+      {showWatchlist && <WatchlistModal onClose={() => setShowWatchlist(false)} />}
     </div>
   );
 }

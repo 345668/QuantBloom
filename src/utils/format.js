@@ -3,6 +3,17 @@ export function formatPrice(value) {
   return value.toFixed(2);
 }
 
+export const fmtPrice = (v) => v == null || isNaN(v) ? '—' : '$' + Number(v).toFixed(2);
+
+export function fmtLargeNumber(n) {
+  if (n == null) return '—';
+  if (n >= 1e12) return '$' + (n / 1e12).toFixed(2) + 'T';
+  if (n >= 1e9) return '$' + (n / 1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return '$' + (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return '$' + (n / 1e3).toFixed(1) + 'K';
+  return '$' + n.toFixed(0);
+}
+
 export function formatPct(value) {
   if (value == null || isNaN(value)) return '—';
   const sign = value >= 0 ? '+' : '';

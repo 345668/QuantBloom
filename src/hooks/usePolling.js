@@ -46,3 +46,5 @@ export function usePolling(url, intervalMs) {
 
   return { data, loading, error, isStale, refetch };
 }
+
+export default usePolling;
