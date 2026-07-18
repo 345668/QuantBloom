@@ -4474,4 +4474,167 @@ export async function registerRoutes(app: Express): Promise<void> {
   console.log('Asset universe endpoints configured');
   console.log('Historical data ingestion endpoints configured');
   console.log('Options chain endpoint configured');
+
+  // ---------------------------------------------------------------------------
+  // FRED (Federal Reserve Economic Data) endpoints
+  // ---------------------------------------------------------------------------
+  const FRED_KEY = process.env.FRED_API_KEY;
+  const MARKETAUX_KEY = process.env.MARKETAUX_API_KEY;
+
+  const FRED_SERIES: Record<string, { name: string; category: string; frequency: string }> = {
+    DFF: { name: 'Fed Funds Rate', category: 'rates', frequency: 'daily' },
+    DGS2: { name: '2-Year Treasury', category: 'rates', frequency: 'daily' },
+    DGS10: { name: '10-Year Treasury', category: 'rates', frequency: 'daily' },
+    DGS30: { name: '30-Year Treasury', category: 'rates', frequency: 'daily' },
+    T10Y2Y: { name: '10Y-2Y Spread', category: 'rates', frequency: 'daily' },
+    T10YFF: { name: '10Y-FF Spread', category: 'rates', frequency: 'daily' },
+    VIXCLS: { name: 'VIX', category: 'volatility', frequency: 'daily' },
+    DTWEXBGS: { name: 'USD Index (Broad)', category: 'forex', frequency: 'daily' },
+    DCOILWTICO: { name: 'WTI Crude Oil', category: 'commodities', frequency: 'daily' },
+    DCOILBRENTEU: { name: 'Brent Crude Oil', category: 'commodities', frequency: 'daily' },
+    GOLDAMGBD228NLBM: { name: 'Gold Price (London)', category: 'commodities', frequency: 'daily' },
+    UNRATE: { name: 'Unemployment Rate', category: 'labor', frequency: 'monthly' },
+    CPIAUCSL: { name: 'CPI (All Urban)', category: 'inflation', frequency: 'monthly' },
+    FEDFUNDS: { name: 'Effective Fed Funds', category: 'rates', frequency: 'monthly' },
+    BAMLH0A0HYM2: { name: 'High Yield Spread', category: 'credit', frequency: 'daily' },
+    UMCSENT: { name: 'Consumer Sentiment', category: 'sentiment', frequency: 'monthly' },
+    IC4WSA: { name: 'Initial Claims (4wk avg)', category: 'labor', frequency: 'weekly' },
+  };
+
+  async function fredFetch(seriesId: string, opts: { limit?: number; sort?: string } = {}) {
+    if (!FRED_KEY) return null;
+    try {
+      const resp = await axios.get(
+        `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${FRED_KEY}&file_type=json&sort_order=${opts.sort || 'desc'}&limit=${opts.limit || 30}`
+      );
+      return resp.data.observations || [];
+    } catch { return null; }
+  }
+
+  app.get('/api/fred/rates', async (_req, res) => {
+    try {
+      const cacheKey = 'fred:rates';
+      const cached = FinanceService['cache'].get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < 300000) return res.json(cached.data);
+      const ids = ['DFF', 'DGS2', 'DGS10', 'DGS30', 'T10Y2Y', 'T10YFF'];
+      const results: Record<string, any> = {};
+      await Promise.all(ids.map(async (id) => {
+        const obs = await fredFetch(id, { limit: 5 });
+        if (obs?.length) {
+          const latest = obs.find((o: any) => o.value !== '.');
+          const prev = obs.find((o: any, i: number) => i > 0 && o.value !== '.');
+          results[id] = {
+            name: FRED_SERIES[id].name, value: latest ? parseFloat(latest.value) : null,
+            date: latest?.date, prior: prev ? parseFloat(prev.value) : null,
+            change: (latest && prev) ? parseFloat(latest.value) - parseFloat(prev.value) : null,
+          };
+        }
+      }));
+      FinanceService['cache'].set(cacheKey, { data: results, timestamp: Date.now() });
+      res.json(results);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get('/api/fred/market', async (_req, res) => {
+    try {
+      const cacheKey = 'fred:market';
+      const cached = FinanceService['cache'].get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < 300000) return res.json(cached.data);
+      const ids = ['VIXCLS', 'DTWEXBGS', 'DCOILWTICO', 'DCOILBRENTEU', 'GOLDAMGBD228NLBM'];
+      const results: Record<string, any> = {};
+      await Promise.all(ids.map(async (id) => {
+        const obs = await fredFetch(id, { limit: 10 });
+        if (obs?.length) {
+          const latest = obs.find((o: any) => o.value !== '.');
+          const prev = obs.find((o: any, i: number) => i > 0 && o.value !== '.');
+          const lv = latest ? parseFloat(latest.value) : 0;
+          const pv = prev ? parseFloat(prev.value) : 0;
+          results[id] = {
+            name: FRED_SERIES[id].name, value: lv || null, date: latest?.date,
+            prior: pv || null, change: (lv && pv) ? lv - pv : null,
+            changePercent: (lv && pv) ? ((lv - pv) / pv) * 100 : null,
+          };
+        }
+      }));
+      FinanceService['cache'].set(cacheKey, { data: results, timestamp: Date.now() });
+      res.json(results);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get('/api/fred/macro', async (_req, res) => {
+    try {
+      const cacheKey = 'fred:macro';
+      const cached = FinanceService['cache'].get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < 600000) return res.json(cached.data);
+      const ids = ['UNRATE', 'CPIAUCSL', 'FEDFUNDS', 'BAMLH0A0HYM2', 'UMCSENT', 'IC4WSA'];
+      const results: Record<string, any> = {};
+      await Promise.all(ids.map(async (id) => {
+        const obs = await fredFetch(id, { limit: 5 });
+        if (obs?.length) {
+          const latest = obs.find((o: any) => o.value !== '.');
+          const prev = obs.find((o: any, i: number) => i > 0 && o.value !== '.');
+          results[id] = {
+            name: FRED_SERIES[id].name, category: FRED_SERIES[id].category,
+            frequency: FRED_SERIES[id].frequency,
+            value: latest ? parseFloat(latest.value) : null, date: latest?.date,
+            prior: prev ? parseFloat(prev.value) : null,
+            change: (latest && prev) ? parseFloat(latest.value) - parseFloat(prev.value) : null,
+          };
+        }
+      }));
+      FinanceService['cache'].set(cacheKey, { data: results, timestamp: Date.now() });
+      res.json(results);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get('/api/fred/series/:id', async (req, res) => {
+    try {
+      const seriesId = req.params.id.toUpperCase();
+      const limit = parseInt(req.query.limit as string) || 30;
+      const cacheKey = `fred:series:${seriesId}:${limit}`;
+      const cached = FinanceService['cache'].get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < 300000) return res.json(cached.data);
+      const obs = await fredFetch(seriesId, { limit });
+      const result = {
+        id: seriesId, title: FRED_SERIES[seriesId]?.name || seriesId,
+        observations: (obs || []).filter((o: any) => o.value !== '.').map((o: any) => ({
+          date: o.date, value: parseFloat(o.value),
+        })),
+      };
+      FinanceService['cache'].set(cacheKey, { data: result, timestamp: Date.now() });
+      res.json(result);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  app.get('/api/news/marketaux', async (req, res) => {
+    try {
+      if (!MARKETAUX_KEY) return res.json([]);
+      const cacheKey = 'news:marketaux';
+      const cached = FinanceService['cache'].get(cacheKey);
+      if (cached && Date.now() - cached.timestamp < 60000) return res.json(cached.data);
+      const limit = parseInt(req.query.limit as string) || 20;
+      const symbols = req.query.symbols as string || '';
+      let url = `https://api.marketaux.com/v1/news/all?api_token=${MARKETAUX_KEY}&language=en&limit=${limit}&filter_entities=true`;
+      if (symbols) url += `&symbols=${symbols}`;
+      const resp = await axios.get(url);
+      const articles = (resp.data.data || []).map((a: any) => {
+        const entities = a.entities || [];
+        const stockEntity = entities.find((e: any) => e.type === 'equity');
+        const ss = entities[0]?.sentiment_score;
+        return {
+          id: `mx-${a.uuid}`, title: a.title, summary: a.description || '',
+          source: a.source, url: a.url, imageUrl: a.image_url || null,
+          publishedAt: new Date(a.published_at),
+          sentiment: ss > 0.2 ? 1 : ss < -0.2 ? -1 : 0,
+          sentimentLabel: ss > 0.2 ? 'bullish' : ss < -0.2 ? 'bearish' : 'neutral',
+          symbol: stockEntity?.symbol || null, category: 'finance',
+        };
+      });
+      FinanceService['cache'].set(cacheKey, { data: articles, timestamp: Date.now() });
+      res.json(articles);
+    } catch (err: any) { res.status(500).json({ error: err.message }); }
+  });
+
+  console.log('FRED economic data endpoints configured');
+  console.log('Marketaux news endpoints configured');
 }

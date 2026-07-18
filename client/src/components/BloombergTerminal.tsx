@@ -20,6 +20,7 @@ import ForexPanel from "./ForexPanel";
 import CompanyProfile from "./CompanyProfile";
 import AnalystRecommendations from "./AnalystRecommendations";
 import FinnhubMarketNews from "./FinnhubMarketNews";
+import { FredEconomicData } from "./FredEconomicData";
 import MarketHeatMap from "./MarketHeatMap";
 import TechnicalAnalysis from "./TechnicalAnalysis";
 import RiskAnalytics from "./RiskAnalytics";
@@ -120,7 +121,8 @@ export default function BloomTerminal() {
       { i: "forex", x: 16, y: 40, w: 8, h: 10, minW: 6, minH: 8 },
       { i: "company-profile", x: 0, y: 50, w: 8, h: 10, minW: 6, minH: 8 },
       { i: "analyst-recs", x: 8, y: 50, w: 8, h: 10, minW: 6, minH: 8 },
-      { i: "finnhub-news", x: 16, y: 50, w: 8, h: 10, minW: 6, minH: 8 }
+      { i: "finnhub-news", x: 16, y: 50, w: 8, h: 10, minW: 6, minH: 8 },
+      { i: "fred-data", x: 0, y: 60, w: 8, h: 10, minW: 6, minH: 8 }
     ],
     md: [
       { i: "quote", x: 0, y: 0, w: 5, h: 4, minW: 4, minH: 3 },
@@ -141,7 +143,8 @@ export default function BloomTerminal() {
       { i: "forex", x: 14, y: 32, w: 6, h: 8, minW: 6, minH: 6 },
       { i: "company-profile", x: 0, y: 40, w: 7, h: 8, minW: 6, minH: 6 },
       { i: "analyst-recs", x: 7, y: 40, w: 7, h: 8, minW: 6, minH: 6 },
-      { i: "finnhub-news", x: 14, y: 40, w: 6, h: 8, minW: 6, minH: 6 }
+      { i: "finnhub-news", x: 14, y: 40, w: 6, h: 8, minW: 6, minH: 6 },
+      { i: "fred-data", x: 0, y: 48, w: 10, h: 8, minW: 6, minH: 6 }
     ],
     sm: [
       { i: "quote", x: 0, y: 0, w: 12, h: 4, minW: 6, minH: 3 },
@@ -164,7 +167,8 @@ export default function BloomTerminal() {
       { i: "forex", x: 0, y: 92, w: 12, h: 8, minW: 6, minH: 6 },
       { i: "company-profile", x: 0, y: 100, w: 12, h: 8, minW: 6, minH: 6 },
       { i: "analyst-recs", x: 0, y: 108, w: 12, h: 8, minW: 6, minH: 6 },
-      { i: "finnhub-news", x: 0, y: 116, w: 12, h: 8, minW: 6, minH: 6 }
+      { i: "finnhub-news", x: 0, y: 116, w: 12, h: 8, minW: 6, minH: 6 },
+      { i: "fred-data", x: 0, y: 124, w: 12, h: 8, minW: 6, minH: 6 }
     ]
   };
 
@@ -433,6 +437,12 @@ export default function BloomTerminal() {
 
           <div key="finnhub-news" className="bg-card border border-card-border rounded-md overflow-hidden">
             <FinnhubMarketNews />
+          </div>
+
+          <div key="fred-data" className="bg-card border border-card-border rounded-md overflow-hidden">
+            <div className="p-4 h-full overflow-auto">
+              <FredEconomicData />
+            </div>
           </div>
         </ResponsiveGridLayout>
       </div>
