@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "http";
-import { createApp } from "../server/app";
+import { createApp } from "./app";
 
 // Reuse the Express app across warm invocations
 let appPromise: ReturnType<typeof createApp> | null = null;

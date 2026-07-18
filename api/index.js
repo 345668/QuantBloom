@@ -6509,7 +6509,7 @@ async function createApp() {
   return app;
 }
 
-// api/index.ts
+// server/vercel-entry.ts
 var appPromise = null;
 async function handler(req, res) {
   if (!appPromise) {
