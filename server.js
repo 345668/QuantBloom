@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import { SP500_BY_SECTOR, MARKET_INDICES, SP500_ALL, SYMBOL_SECTOR } from './sp500.js';
 import { INSTRUMENTS, INSTRUMENTS_BY_CLASS, INSTRUMENT_BY_SYMBOL, ASSET_CLASSES } from './instruments.js';
 import { greeks as bsGreeks, impliedVol, yearsToExpiry } from './blackscholes.js';
+import { ols, pValue } from './regression.js';
 
 dotenv.config();
 
@@ -1737,6 +1738,144 @@ app.get('/api/v1/analytics/var', async (req, res) => {
       fatTails,
       worstDay: +(sorted[0] * 100).toFixed(2),
       bestDay: +(sorted[sorted.length - 1] * 100).toFixed(2),
+    };
+
+    cacheSet(cacheKey, result, 900000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/analytics/factors?symbols=..&values=..&range=2y
+//
+// Regresses portfolio excess returns on long/short factor spreads built from
+// liquid ETFs. Reveals style tilts the holder never explicitly chose — e.g. a
+// portfolio of large-cap tech is implicitly short value and long momentum.
+// ---------------------------------------------------------------------------
+const FACTOR_DEFS = [
+  { key: 'market', name: 'Market', long: 'SPY', short: null,
+    desc: 'Broad equity market exposure (beta).' },
+  { key: 'size', name: 'Size', long: 'IWM', short: 'SPY',
+    desc: 'Small-cap minus large-cap. Positive = tilted to smaller companies.' },
+  { key: 'value', name: 'Value', long: 'IWD', short: 'IWF',
+    desc: 'Value minus growth. Negative = tilted to growth names.' },
+  { key: 'momentum', name: 'Momentum', long: 'MTUM', short: 'SPY',
+    desc: 'Momentum minus market. Positive = chasing recent winners.' },
+  { key: 'quality', name: 'Quality', long: 'QUAL', short: 'SPY',
+    desc: 'Quality minus market. Positive = profitable, low-leverage firms.' },
+  { key: 'lowVol', name: 'Low Volatility', long: 'USMV', short: 'SPY',
+    desc: 'Min-vol minus market. Positive = defensive tilt.' },
+];
+
+app.get('/api/v1/analytics/factors', async (req, res) => {
+  try {
+    const symbols = (req.query.symbols || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 15);
+    const values = (req.query.values || '').split(',').map(v => parseFloat(v) || 0);
+    const range = ['1y', '2y', '5y'].includes(req.query.range) ? req.query.range : '2y';
+    if (!symbols.length) return res.json({ available: false, message: 'No positions' });
+
+    const cacheKey = `factors:${symbols.join(',')}:${values.join(',')}:${range}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    // Every ETF leg we need, de-duplicated.
+    const legs = [...new Set(FACTOR_DEFS.flatMap(f => [f.long, f.short]).filter(Boolean))];
+
+    const [built, legCandles, rfObs] = await Promise.all([
+      buildPortfolioReturns(symbols, values, range),
+      Promise.allSettled(legs.map(s => yahooCandles(s, '1d', range))),
+      fredFetch('DGS3MO', { limit: 5 }).catch(() => null),
+    ]);
+    if (!built) return res.json({ available: false, message: 'Insufficient price history' });
+
+    const retsOf = (candles) => {
+      const out = [];
+      for (let i = 1; i < candles.length; i++) {
+        if (candles[i].close && candles[i - 1].close) {
+          out.push((candles[i].close - candles[i - 1].close) / candles[i - 1].close);
+        }
+      }
+      return out;
+    };
+
+    const legReturns = {};
+    legCandles.forEach((r, i) => {
+      if (r.status === 'fulfilled' && r.value.length > 30) legReturns[legs[i]] = retsOf(r.value);
+    });
+
+    const usable = FACTOR_DEFS.filter(f =>
+      legReturns[f.long] && (!f.short || legReturns[f.short])
+    );
+    if (usable.length < 2) return res.json({ available: false, message: 'Factor proxy data unavailable' });
+
+    // Daily risk-free rate from the 3-month bill.
+    const rfAnnual = (() => {
+      const v = (rfObs || []).find(o => o.value !== '.');
+      return v ? parseFloat(v.value) / 100 : 0.045;
+    })();
+    const rfDaily = rfAnnual / 252;
+
+    // Align everything to the shortest available series.
+    const len = Math.min(
+      built.portfolio.length,
+      ...usable.flatMap(f => [legReturns[f.long].length, f.short ? legReturns[f.short].length : Infinity])
+        .filter(n => isFinite(n))
+    );
+    if (len < 60) return res.json({ available: false, message: 'Need at least 60 overlapping observations' });
+
+    const tail = (arr) => arr.slice(-len);
+    const portExcess = tail(built.portfolio).map(r => r - rfDaily);
+
+    const X = [];
+    for (let t = 0; t < len; t++) {
+      X.push(usable.map(f => {
+        const l = tail(legReturns[f.long])[t];
+        // Market is an excess return; the rest are long/short spreads.
+        return f.short ? l - tail(legReturns[f.short])[t] : l - rfDaily;
+      }));
+    }
+
+    const fit = ols(X, portExcess);
+    if (!fit) return res.json({ available: false, message: 'Regression failed (collinear factors)' });
+
+    const exposures = usable.map((f, i) => {
+      const t = fit.tStats[i];
+      const p = pValue(t, fit.dof);
+      return {
+        key: f.key, name: f.name, description: f.desc,
+        proxy: f.short ? `${f.long} − ${f.short}` : f.long,
+        beta: +fit.coefficients[i].toFixed(3),
+        tStat: t == null ? null : +t.toFixed(2),
+        pValue: p,
+        // Only call a tilt real when it clears conventional significance.
+        significant: p != null && p < 0.05,
+      };
+    });
+
+    // Alpha: the daily intercept, annualised.
+    const alphaAnnual = fit.intercept * 252 * 100;
+    const alphaP = pValue(fit.interceptT, fit.dof);
+
+    const result = {
+      available: true,
+      symbols: built.valid,
+      range, observations: fit.n,
+      riskFreeRate: +(rfAnnual * 100).toFixed(2),
+      exposures,
+      alpha: {
+        annualisedPercent: +alphaAnnual.toFixed(2),
+        tStat: fit.interceptT == null ? null : +fit.interceptT.toFixed(2),
+        pValue: alphaP,
+        significant: alphaP != null && alphaP < 0.05,
+      },
+      rSquared: +fit.r2.toFixed(4),
+      adjRSquared: +fit.adjR2.toFixed(4),
+      // Share of variance the factors do NOT explain — stock-specific risk.
+      idiosyncraticShare: +((1 - fit.r2) * 100).toFixed(1),
+      residualVolAnnual: +(fit.residualStd * Math.sqrt(252) * 100).toFixed(2),
+      methodology: 'OLS of daily excess returns on ETF-proxied long/short factor spreads.',
     };
 
     cacheSet(cacheKey, result, 900000);

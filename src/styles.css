@@ -1970,3 +1970,34 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
 .cmp-table tbody tr { cursor: pointer; }
 .cmp-table tbody tr:hover { background: var(--bg-hover); }
 .cmp-sym { color: var(--text-primary); font-weight: 700; }
+
+/* =========================================================================
+   v4 — Factor exposure
+   ========================================================================= */
+.fx-panel { max-height: 600px; }
+.fx-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-bottom: 8px; }
+.fx-stat {
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  padding: 5px 4px; display: flex; flex-direction: column; align-items: center;
+}
+.fx-stat-label { font-size: 8px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+.fx-stat-value { font-size: 14px; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.fx-stat-sub { font-size: 8px; color: var(--text-dim); }
+
+.fx-bars { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
+.fx-row { display: grid; grid-template-columns: 82px 1fr 56px; gap: 5px; align-items: center; }
+.fx-row.insig { opacity: 0.42; }
+.fx-name { font-size: 9px; color: var(--text-secondary); }
+/* Track is centred: bars grow right for positive loadings, left for negative. */
+.fx-track { position: relative; height: 11px; background: var(--bg-secondary); border-radius: 1px; }
+.fx-axis { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--border-bright); }
+.fx-fill { position: absolute; top: 1px; bottom: 1px; border-radius: 1px; }
+.fx-fill.pos { background: var(--accent-up); }
+.fx-fill.neg { background: var(--accent-down); }
+.fx-beta { font-size: 10px; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.fx-star { color: var(--accent-neutral); margin-left: 1px; }
+
+.fx-reads { display: flex; flex-direction: column; gap: 1px; }
+.fx-read { display: flex; gap: 6px; font-size: 9px; padding: 1px 0; border-bottom: 1px solid var(--border); }
+.fx-read-name { color: var(--text-primary); font-weight: 600; min-width: 74px; }
+.fx-read-text { color: var(--text-secondary); }

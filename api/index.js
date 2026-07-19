@@ -688,6 +688,92 @@ function yearsToExpiry(expirySeconds, nowMs = Date.now()) {
   return Math.max((expirySeconds * 1e3 - nowMs) / (365 * 24 * 3600 * 1e3), 0);
 }
 
+// regression.js
+function invert(M) {
+  const n = M.length;
+  const A = M.map((row, i) => [...row, ...Array.from({ length: n }, (_, j) => i === j ? 1 : 0)]);
+  for (let col = 0; col < n; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < n; r++) {
+      if (Math.abs(A[r][col]) > Math.abs(A[pivot][col])) pivot = r;
+    }
+    if (Math.abs(A[pivot][col]) < 1e-12) return null;
+    [A[col], A[pivot]] = [A[pivot], A[col]];
+    const p = A[col][col];
+    for (let j = 0; j < 2 * n; j++) A[col][j] /= p;
+    for (let r = 0; r < n; r++) {
+      if (r === col) continue;
+      const f = A[r][col];
+      if (f === 0) continue;
+      for (let j = 0; j < 2 * n; j++) A[r][j] -= f * A[col][j];
+    }
+  }
+  return A.map((row) => row.slice(n));
+}
+function transpose(M) {
+  return M[0].map((_, j) => M.map((row) => row[j]));
+}
+function matMul(A, B) {
+  const n = A.length, m = B[0].length, k = B.length;
+  const out = Array.from({ length: n }, () => new Array(m).fill(0));
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < m; j++) {
+      let s = 0;
+      for (let x = 0; x < k; x++) s += A[i][x] * B[x][j];
+      out[i][j] = s;
+    }
+  }
+  return out;
+}
+function ols(X, y) {
+  const n = X.length;
+  if (!n || n !== y.length) return null;
+  const k = X[0].length;
+  if (n <= k + 1) return null;
+  const Xd = X.map((row) => [1, ...row]);
+  const Xt = transpose(Xd);
+  const XtX = matMul(Xt, Xd);
+  const XtXinv = invert(XtX);
+  if (!XtXinv) return null;
+  const Xty = matMul(Xt, y.map((v) => [v]));
+  const beta = matMul(XtXinv, Xty).map((r) => r[0]);
+  const fitted = Xd.map((row) => row.reduce((s, v, i) => s + v * beta[i], 0));
+  const resid = y.map((v, i) => v - fitted[i]);
+  const yMean = y.reduce((a, b) => a + b, 0) / n;
+  const tss = y.reduce((s, v) => s + (v - yMean) ** 2, 0);
+  const rss = resid.reduce((s, v) => s + v * v, 0);
+  const dof = n - k - 1;
+  const sigma2 = rss / dof;
+  const se = XtXinv.map((row, i) => Math.sqrt(Math.max(sigma2 * row[i], 0)));
+  const tStats = beta.map((b, i) => se[i] ? b / se[i] : null);
+  const r2 = tss > 0 ? 1 - rss / tss : 0;
+  const adjR2 = tss > 0 && dof > 0 ? 1 - rss / dof / (tss / (n - 1)) : 0;
+  return {
+    intercept: beta[0],
+    coefficients: beta.slice(1),
+    interceptSE: se[0],
+    coefficientSE: se.slice(1),
+    interceptT: tStats[0],
+    tStats: tStats.slice(1),
+    r2,
+    adjR2,
+    residualStd: Math.sqrt(sigma2),
+    n,
+    dof,
+    residuals: resid
+  };
+}
+function pValue(t, dof) {
+  if (t == null || !isFinite(t)) return null;
+  if (dof < 30) return null;
+  const z = Math.abs(t);
+  const s = 1 / (1 + 0.2316419 * z);
+  const pdf = Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI);
+  const poly = s * (0.31938153 + s * (-0.356563782 + s * (1.781477937 + s * (-1.821255978 + s * 1.330274429))));
+  const upperTail = pdf * poly;
+  return +(2 * upperTail).toFixed(4);
+}
+
 // server.js
 dotenv.config();
 var app = express();
@@ -2140,6 +2226,147 @@ app.get("/api/v1/analytics/var", async (req, res) => {
       fatTails,
       worstDay: +(sorted[0] * 100).toFixed(2),
       bestDay: +(sorted[sorted.length - 1] * 100).toFixed(2)
+    };
+    cacheSet(cacheKey, result, 9e5);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+var FACTOR_DEFS = [
+  {
+    key: "market",
+    name: "Market",
+    long: "SPY",
+    short: null,
+    desc: "Broad equity market exposure (beta)."
+  },
+  {
+    key: "size",
+    name: "Size",
+    long: "IWM",
+    short: "SPY",
+    desc: "Small-cap minus large-cap. Positive = tilted to smaller companies."
+  },
+  {
+    key: "value",
+    name: "Value",
+    long: "IWD",
+    short: "IWF",
+    desc: "Value minus growth. Negative = tilted to growth names."
+  },
+  {
+    key: "momentum",
+    name: "Momentum",
+    long: "MTUM",
+    short: "SPY",
+    desc: "Momentum minus market. Positive = chasing recent winners."
+  },
+  {
+    key: "quality",
+    name: "Quality",
+    long: "QUAL",
+    short: "SPY",
+    desc: "Quality minus market. Positive = profitable, low-leverage firms."
+  },
+  {
+    key: "lowVol",
+    name: "Low Volatility",
+    long: "USMV",
+    short: "SPY",
+    desc: "Min-vol minus market. Positive = defensive tilt."
+  }
+];
+app.get("/api/v1/analytics/factors", async (req, res) => {
+  try {
+    const symbols = (req.query.symbols || "").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 15);
+    const values = (req.query.values || "").split(",").map((v) => parseFloat(v) || 0);
+    const range = ["1y", "2y", "5y"].includes(req.query.range) ? req.query.range : "2y";
+    if (!symbols.length) return res.json({ available: false, message: "No positions" });
+    const cacheKey = `factors:${symbols.join(",")}:${values.join(",")}:${range}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+    const legs = [...new Set(FACTOR_DEFS.flatMap((f) => [f.long, f.short]).filter(Boolean))];
+    const [built, legCandles, rfObs] = await Promise.all([
+      buildPortfolioReturns(symbols, values, range),
+      Promise.allSettled(legs.map((s) => yahooCandles(s, "1d", range))),
+      fredFetch("DGS3MO", { limit: 5 }).catch(() => null)
+    ]);
+    if (!built) return res.json({ available: false, message: "Insufficient price history" });
+    const retsOf = (candles) => {
+      const out = [];
+      for (let i = 1; i < candles.length; i++) {
+        if (candles[i].close && candles[i - 1].close) {
+          out.push((candles[i].close - candles[i - 1].close) / candles[i - 1].close);
+        }
+      }
+      return out;
+    };
+    const legReturns = {};
+    legCandles.forEach((r, i) => {
+      if (r.status === "fulfilled" && r.value.length > 30) legReturns[legs[i]] = retsOf(r.value);
+    });
+    const usable = FACTOR_DEFS.filter(
+      (f) => legReturns[f.long] && (!f.short || legReturns[f.short])
+    );
+    if (usable.length < 2) return res.json({ available: false, message: "Factor proxy data unavailable" });
+    const rfAnnual = (() => {
+      const v = (rfObs || []).find((o) => o.value !== ".");
+      return v ? parseFloat(v.value) / 100 : 0.045;
+    })();
+    const rfDaily = rfAnnual / 252;
+    const len = Math.min(
+      built.portfolio.length,
+      ...usable.flatMap((f) => [legReturns[f.long].length, f.short ? legReturns[f.short].length : Infinity]).filter((n) => isFinite(n))
+    );
+    if (len < 60) return res.json({ available: false, message: "Need at least 60 overlapping observations" });
+    const tail = (arr) => arr.slice(-len);
+    const portExcess = tail(built.portfolio).map((r) => r - rfDaily);
+    const X = [];
+    for (let t = 0; t < len; t++) {
+      X.push(usable.map((f) => {
+        const l = tail(legReturns[f.long])[t];
+        return f.short ? l - tail(legReturns[f.short])[t] : l - rfDaily;
+      }));
+    }
+    const fit = ols(X, portExcess);
+    if (!fit) return res.json({ available: false, message: "Regression failed (collinear factors)" });
+    const exposures = usable.map((f, i) => {
+      const t = fit.tStats[i];
+      const p = pValue(t, fit.dof);
+      return {
+        key: f.key,
+        name: f.name,
+        description: f.desc,
+        proxy: f.short ? `${f.long} \u2212 ${f.short}` : f.long,
+        beta: +fit.coefficients[i].toFixed(3),
+        tStat: t == null ? null : +t.toFixed(2),
+        pValue: p,
+        // Only call a tilt real when it clears conventional significance.
+        significant: p != null && p < 0.05
+      };
+    });
+    const alphaAnnual = fit.intercept * 252 * 100;
+    const alphaP = pValue(fit.interceptT, fit.dof);
+    const result = {
+      available: true,
+      symbols: built.valid,
+      range,
+      observations: fit.n,
+      riskFreeRate: +(rfAnnual * 100).toFixed(2),
+      exposures,
+      alpha: {
+        annualisedPercent: +alphaAnnual.toFixed(2),
+        tStat: fit.interceptT == null ? null : +fit.interceptT.toFixed(2),
+        pValue: alphaP,
+        significant: alphaP != null && alphaP < 0.05
+      },
+      rSquared: +fit.r2.toFixed(4),
+      adjRSquared: +fit.adjR2.toFixed(4),
+      // Share of variance the factors do NOT explain — stock-specific risk.
+      idiosyncraticShare: +((1 - fit.r2) * 100).toFixed(1),
+      residualVolAnnual: +(fit.residualStd * Math.sqrt(252) * 100).toFixed(2),
+      methodology: "OLS of daily excess returns on ETF-proxied long/short factor spreads."
     };
     cacheSet(cacheKey, result, 9e5);
     res.json(result);

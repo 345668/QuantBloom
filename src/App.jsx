@@ -30,6 +30,7 @@ import BreadthPanel from './components/BreadthPanel.jsx';
 import MarketsPanel from './components/MarketsPanel.jsx';
 import ComparePanel from './components/ComparePanel.jsx';
 import VaRPanel from './components/VaRPanel.jsx';
+import FactorPanel from './components/FactorPanel.jsx';
 import StressTestPanel from './components/StressTestPanel.jsx';
 import StrategyBuilder from './components/StrategyBuilder.jsx';
 
@@ -131,9 +132,10 @@ function Dashboard() {
       </div>
 
       {/* Row 7: Quantitative risk */}
-      <div className="dashboard-row row-3col">
+      <div className="dashboard-row row-4col">
         <VaRPanel />
         <StressTestPanel />
+        <FactorPanel />
         <StrategyBuilder />
       </div>
 
