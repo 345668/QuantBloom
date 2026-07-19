@@ -22,6 +22,8 @@ import RiskPanel from './components/RiskPanel.jsx';
 import AlertsPanel from './components/AlertsPanel.jsx';
 import OptionsPanel from './components/OptionsPanel.jsx';
 import PortfolioPanel from './components/PortfolioPanel.jsx';
+import FinancialsPanel from './components/FinancialsPanel.jsx';
+import CorrelationPanel from './components/CorrelationPanel.jsx';
 
 function Dashboard() {
   const { state, dispatch } = useDashboard();
@@ -99,12 +101,18 @@ function Dashboard() {
         <ScreenerPanel />
       </div>
 
-      {/* Row 5: Portfolio + Risk + Options + Alerts */}
+      {/* Row 5: Portfolio + Risk + Correlation + Alerts */}
       <div className="dashboard-row row-4col">
         <PortfolioPanel />
         <RiskPanel />
-        <OptionsPanel />
+        <CorrelationPanel />
         <AlertsPanel />
+      </div>
+
+      {/* Row 6: Financials + Options */}
+      <div className="dashboard-row row-2col">
+        <FinancialsPanel />
+        <OptionsPanel />
       </div>
 
       {/* Watchlist Modal */}

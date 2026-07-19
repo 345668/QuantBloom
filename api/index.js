@@ -1542,6 +1542,151 @@ app.get("/api/v1/ipo", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+app.get("/api/v1/financials", async (req, res) => {
+  try {
+    const symbol = (req.query.symbol || "AAPL").toUpperCase();
+    const freq = req.query.freq === "quarterly" ? "quarterly" : "annual";
+    const periods = Math.min(parseInt(req.query.periods) || 4, 8);
+    const cacheKey = `financials:${symbol}:${freq}:${periods}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+    const data = await finnhubFetch(`/stock/financials-reported?symbol=${symbol}&freq=${freq}`);
+    const reports = (data?.data || []).slice(0, periods);
+    if (!reports.length) {
+      return res.json({ symbol, freq, available: false, periods: [], statements: {} });
+    }
+    const periodMeta = reports.map((r) => ({
+      year: r.year,
+      quarter: r.quarter,
+      form: r.form,
+      endDate: r.endDate ? String(r.endDate).slice(0, 10) : null,
+      label: freq === "annual" ? `FY${r.year}` : `Q${r.quarter} ${r.year}`
+    }));
+    const buildStatement = (key) => {
+      const order = [];
+      const seen = /* @__PURE__ */ new Set();
+      for (const r of reports) {
+        for (const item of r.report?.[key] || []) {
+          if (item.concept && !seen.has(item.concept)) {
+            seen.add(item.concept);
+            order.push({ concept: item.concept, label: item.label || item.concept, unit: item.unit });
+          }
+        }
+      }
+      return order.map(({ concept, label, unit }) => {
+        const cells = reports.map((r) => {
+          const hit = (r.report?.[key] || []).find((i) => i.concept === concept);
+          return hit ? { value: hit.value ?? null, label: hit.label || null } : { value: null, label: null };
+        });
+        const norm = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const anchor = norm(label);
+        const mismatched = cells.map((c) => c.label != null && norm(c.label) !== anchor);
+        const values = cells.map((c) => c.value);
+        const yoy = values.map((v, i) => {
+          const prev = values[i + 1];
+          if (v == null || prev == null || prev === 0) return null;
+          if (mismatched[i] || mismatched[i + 1]) return null;
+          return +((v - prev) / Math.abs(prev) * 100).toFixed(1);
+        });
+        return {
+          concept,
+          label,
+          unit,
+          values,
+          yoy,
+          mismatched,
+          periodLabels: cells.map((c) => c.label)
+        };
+      }).filter((row) => row.values.some((v) => v != null));
+    };
+    const result = {
+      symbol,
+      freq,
+      available: true,
+      periods: periodMeta,
+      statements: {
+        income: buildStatement("ic"),
+        balance: buildStatement("bs"),
+        cashflow: buildStatement("cf")
+      }
+    };
+    cacheSet(cacheKey, result, 864e5);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.get("/api/v1/analytics/correlation", async (req, res) => {
+  try {
+    const symbols = (req.query.symbols || "").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 15);
+    const window = Math.min(parseInt(req.query.window) || 90, 365);
+    if (symbols.length < 2) {
+      return res.json({ available: false, message: "Need at least 2 symbols" });
+    }
+    const cacheKey = `corr:${symbols.join(",")}:${window}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+    const range = window <= 90 ? "6mo" : window <= 180 ? "1y" : "2y";
+    const settled = await Promise.allSettled(symbols.map((s) => yahooCandles(s, "1d", range)));
+    const returnsBySymbol = {};
+    settled.forEach((r, i) => {
+      if (r.status !== "fulfilled" || r.value.length < 10) return;
+      const closes = r.value.map((c) => c.close);
+      const rets = [];
+      for (let j = 1; j < closes.length; j++) {
+        if (closes[j] && closes[j - 1]) rets.push((closes[j] - closes[j - 1]) / closes[j - 1]);
+      }
+      returnsBySymbol[symbols[i]] = rets.slice(-window);
+    });
+    const valid = symbols.filter((s) => returnsBySymbol[s]?.length >= 10);
+    if (valid.length < 2) {
+      return res.json({ available: false, message: "Insufficient price history" });
+    }
+    const len = Math.min(...valid.map((s) => returnsBySymbol[s].length));
+    const series = valid.map((s) => returnsBySymbol[s].slice(-len));
+    const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+    const corr = (a, b) => {
+      const ma = mean(a), mb = mean(b);
+      let num = 0, da = 0, db = 0;
+      for (let i = 0; i < a.length; i++) {
+        const x = a[i] - ma, y = b[i] - mb;
+        num += x * y;
+        da += x * x;
+        db += y * y;
+      }
+      const den = Math.sqrt(da * db);
+      return den ? num / den : 0;
+    };
+    const matrix = series.map((a, i) => series.map(
+      (b, j) => i === j ? 1 : +corr(a, b).toFixed(3)
+    ));
+    const pairs = [];
+    for (let i = 0; i < valid.length; i++) {
+      for (let j = i + 1; j < valid.length; j++) {
+        pairs.push({ a: valid[i], b: valid[j], correlation: matrix[i][j] });
+      }
+    }
+    pairs.sort((x, y) => y.correlation - x.correlation);
+    const offDiagonal = pairs.map((p) => p.correlation);
+    const avg = offDiagonal.length ? offDiagonal.reduce((a, b) => a + b, 0) / offDiagonal.length : 0;
+    const result = {
+      available: true,
+      symbols: valid,
+      window: len,
+      matrix,
+      averageCorrelation: +avg.toFixed(3),
+      mostCorrelated: pairs.slice(0, 3),
+      leastCorrelated: pairs.slice(-3).reverse(),
+      // Naive diversification read: high average correlation means the book
+      // moves as one position regardless of how many tickers it holds.
+      diversification: avg > 0.7 ? "Poor" : avg > 0.4 ? "Moderate" : "Good"
+    };
+    cacheSet(cacheKey, result, 9e5);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.get("/api/v1/technical", async (req, res) => {
   try {
     const symbol = (req.query.symbol || "AAPL").toUpperCase();
