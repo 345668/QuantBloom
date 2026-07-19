@@ -24,6 +24,8 @@ export default function FundamentalsPanel() {
     profitability: { title: 'Profitability', items: data?.profitability, labels: { roeTTM: 'ROE', roaTTM: 'ROA', grossMarginTTM: 'Gross Margin', operatingMarginTTM: 'Operating Margin', netMarginTTM: 'Net Margin' }, suffix: '%' },
     growth: { title: 'Growth', items: data?.growth, labels: { revenueGrowthTTM: 'Revenue (TTM)', epsGrowthTTM: 'EPS (TTM)', revenueGrowth3Y: 'Revenue (3Y)', epsGrowth3Y: 'EPS (3Y)' }, suffix: '%' },
     balance: { title: 'Balance Sheet', items: data?.balanceSheet, labels: { totalDebtToEquity: 'Debt/Equity', currentRatio: 'Current Ratio', quickRatio: 'Quick Ratio' } },
+    dividends: { title: 'Dividends', items: data?.dividends, labels: { dividendYield: 'Div Yield', dividendPerShare: 'Div/Share', payoutRatio: 'Payout Ratio' } },
+    trading: { title: 'Trading', items: data?.trading, labels: { week52High: '52W High', week52Low: '52W Low', beta: 'Beta' } },
   };
 
   const sec = sections[tab];

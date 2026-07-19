@@ -1507,3 +1507,76 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
   .ranking-row { grid-template-columns: 20px 1fr 40px 50px; }
   .ranking-rs { display: none; }
 }
+
+/* =========================================================================
+   v2.1 — Technical trading-floor tool, price targets, indices
+   ========================================================================= */
+.neutral-sig { color: var(--accent-neutral); }
+.neutral-bg { background: var(--accent-neutral); }
+
+/* --- Technical Analysis Panel --- */
+.ta-panel { max-height: 640px; }
+.ta-gauge {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  padding: 8px;
+  margin-bottom: 10px;
+}
+.ta-gauge-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.ta-gauge-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.08em; }
+.ta-gauge-verdict { font-size: 16px; font-weight: 700; letter-spacing: 0.04em; }
+.ta-gauge-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 5px; }
+.gseg { height: 100%; }
+.gseg.positive { background: var(--accent-up); }
+.gseg.negative { background: var(--accent-down); }
+.ta-gauge-counts { display: flex; justify-content: space-between; font-size: 10px; font-weight: 600; }
+
+.ta-range { margin-bottom: 10px; }
+.ta-range-labels { display: flex; justify-content: space-between; font-size: 10px; margin-bottom: 3px; }
+.ta-range-title { color: var(--text-dim); }
+.ta-range-track { position: relative; height: 6px; background: linear-gradient(90deg, var(--accent-down), var(--accent-neutral), var(--accent-up)); border-radius: 3px; }
+.ta-range-marker { position: absolute; top: -2px; width: 2px; height: 10px; background: var(--text-primary); transform: translateX(-50%); }
+
+.ta-osc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 10px; margin-bottom: 6px; }
+.ta-osc { display: flex; justify-content: space-between; font-size: 11px; padding: 2px 0; border-bottom: 1px solid var(--border); }
+.ta-osc span:first-child { color: var(--text-secondary); }
+.ta-osc span:last-child { font-weight: 600; }
+
+.ta-ma-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 10px; margin-bottom: 6px; }
+.ta-ma { display: flex; justify-content: space-between; font-size: 11px; padding: 2px 0; border-bottom: 1px solid var(--border); }
+.ta-ma-name { color: var(--text-secondary); }
+.ta-ma-val { font-weight: 600; }
+
+.ta-two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 6px; }
+.ta-kv { display: flex; justify-content: space-between; font-size: 10px; padding: 1px 0; }
+.ta-kv span:first-child { color: var(--text-dim); }
+
+.ta-signals { display: flex; flex-direction: column; }
+.ta-sig-row { display: grid; grid-template-columns: 1fr 70px 60px; gap: 6px; align-items: center; padding: 2px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
+.ta-sig-name { color: var(--text-secondary); }
+.ta-sig-val { text-align: right; color: var(--text-body); }
+.ta-pill { text-align: center; font-size: 8px; font-weight: 700; padding: 1px 4px; border-radius: 2px; letter-spacing: 0.04em; }
+.ta-pill.positive { background: rgba(0,204,68,0.15); color: var(--accent-up); }
+.ta-pill.negative { background: rgba(204,34,0,0.15); color: var(--accent-down); }
+.ta-pill.neutral-sig { background: rgba(255,184,0,0.12); color: var(--accent-neutral); }
+
+/* --- Analyst price target --- */
+.trend-tag { margin-left: 4px; font-weight: 600; }
+.price-target { background: var(--bg-secondary); border: 1px solid var(--border); padding: 6px 8px; margin-bottom: 8px; }
+.pt-row { display: flex; align-items: baseline; gap: 8px; margin-bottom: 3px; }
+.pt-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; flex: 1; }
+.pt-mean { font-size: 15px; font-weight: 700; color: var(--text-primary); }
+.pt-upside { font-size: 11px; font-weight: 600; }
+.pt-range { display: flex; justify-content: space-between; font-size: 9px; margin-bottom: 4px; }
+.pt-current { color: var(--text-secondary); }
+.pt-track { position: relative; height: 4px; background: var(--bg-hover); border-radius: 2px; }
+.pt-current-marker { position: absolute; top: -2px; width: 2px; height: 8px; background: var(--text-body); transform: translateX(-50%); }
+.pt-mean-marker { position: absolute; top: -3px; width: 6px; height: 10px; background: var(--accent-blue); border-radius: 2px; transform: translateX(-50%); }
+
+/* --- Indices Panel --- */
+.indices-list { display: flex; flex-direction: column; }
+.index-row { display: grid; grid-template-columns: 44px 1fr 70px 56px; gap: 6px; align-items: center; padding: 3px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
+.index-short { color: var(--text-primary); font-weight: 700; }
+.index-name { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
+.index-price { text-align: right; font-weight: 600; }
+.index-change { text-align: right; font-weight: 600; font-size: 10px; }

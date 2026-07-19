@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
+import { SP500_BY_SECTOR, MARKET_INDICES, SP500_ALL, SYMBOL_SECTOR } from './sp500.js';
 
 dotenv.config();
 
@@ -40,21 +41,12 @@ const ALPHA_VANTAGE_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 const MARKETAUX_KEY = process.env.MARKETAUX_API_KEY;
 
 // ---------------------------------------------------------------------------
-// Heatmap Constituents — static list of top stocks per GICS sector
+// Heatmap Constituents — top names per GICS sector, sampled from the S&P 500.
+// (The full per-sector universe lives in sp500.js and powers the screener.)
 // ---------------------------------------------------------------------------
-const HEATMAP_CONSTITUENTS = {
-  "Information Technology": ["AAPL","MSFT","NVDA","AVGO","ORCL","AMD","INTC"],
-  "Health Care": ["LLY","UNH","JNJ","ABBV","MRK","TMO","ABT"],
-  "Financials": ["BRK-B","JPM","V","MA","BAC","WFC","GS"],
-  "Consumer Discretionary": ["AMZN","TSLA","HD","MCD","NKE","SBUX"],
-  "Communication Services": ["META","GOOGL","GOOG","NFLX","DIS","CMCSA"],
-  "Industrials": ["GE","CAT","UNP","RTX","HON","BA"],
-  "Consumer Staples": ["PG","KO","PEP","COST","WMT","PM"],
-  "Energy": ["XOM","CVX","COP","SLB","EOG","MPC"],
-  "Utilities": ["NEE","SO","DUK","SRE","AEP","D"],
-  "Real Estate": ["PLD","AMT","EQIX","SPG","PSA","O"],
-  "Materials": ["LIN","APD","SHW","FCX","NEM","ECL"]
-};
+const HEATMAP_CONSTITUENTS = Object.fromEntries(
+  Object.entries(SP500_BY_SECTOR).map(([sector, symbols]) => [sector, symbols.slice(0, 8)])
+);
 
 // ---------------------------------------------------------------------------
 // Sentiment tagging
@@ -110,6 +102,24 @@ async function getYahooAuth() {
   }
 }
 
+// Fetch Yahoo quoteSummary modules (profile, financials, analyst data, ...).
+// Free, no API key — used as a fallback for Finnhub premium-only endpoints.
+async function yahooQuoteSummary(symbol, modules) {
+  const auth = await getYahooAuth();
+  if (!auth) return null;
+  for (const host of ['query2.finance.yahoo.com', 'query1.finance.yahoo.com']) {
+    try {
+      const url = `https://${host}/v10/finance/quoteSummary/${symbol}?modules=${modules}&crumb=${encodeURIComponent(auth.crumb)}`;
+      const resp = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Cookie': auth.cookie } });
+      if (!resp.ok) continue;
+      const data = await resp.json();
+      const result = data.quoteSummary?.result?.[0];
+      if (result) return result;
+    } catch { /* try next host */ }
+  }
+  return null;
+}
+
 async function yahooQuote(symbol) {
   const resp = await fetch(
     `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=2d`,
@@ -155,6 +165,123 @@ async function yahooCandles(symbol, interval, range) {
     close: q.close?.[i] ?? null,
     volume: q.volume?.[i] ?? 0
   })).filter(c => c.open !== null && c.close !== null);
+}
+
+// ---------------------------------------------------------------------------
+// Technical indicator maths — computed from candle data so we never depend on
+// a premium data feed. All functions take arrays of numbers (oldest first).
+// ---------------------------------------------------------------------------
+function sma(values, period) {
+  if (values.length < period) return null;
+  const slice = values.slice(-period);
+  return slice.reduce((a, b) => a + b, 0) / period;
+}
+
+function ema(values, period) {
+  if (values.length < period) return null;
+  const k = 2 / (period + 1);
+  let e = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < values.length; i++) e = values[i] * k + e * (1 - k);
+  return e;
+}
+
+function emaSeries(values, period) {
+  if (values.length < period) return [];
+  const k = 2 / (period + 1);
+  const out = [];
+  let e = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  out.push(e);
+  for (let i = period; i < values.length; i++) { e = values[i] * k + e * (1 - k); out.push(e); }
+  return out;
+}
+
+function rsi(closes, period = 14) {
+  if (closes.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) gains += diff; else losses -= diff;
+  }
+  const avgGain = gains / period, avgLoss = losses / period;
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
+}
+
+function macd(closes, fast = 12, slow = 26, signal = 9) {
+  if (closes.length < slow + signal) return null;
+  const fastE = emaSeries(closes, fast);
+  const slowE = emaSeries(closes, slow);
+  // Align the two EMA series to the same (shorter) length.
+  const offset = fastE.length - slowE.length;
+  const macdLine = slowE.map((s, i) => fastE[i + offset] - s);
+  const signalLine = emaSeries(macdLine, signal);
+  const macdVal = macdLine[macdLine.length - 1];
+  const sigVal = signalLine[signalLine.length - 1];
+  return { macd: macdVal, signal: sigVal, histogram: macdVal - sigVal };
+}
+
+function bollinger(closes, period = 20, mult = 2) {
+  if (closes.length < period) return null;
+  const slice = closes.slice(-period);
+  const mean = slice.reduce((a, b) => a + b, 0) / period;
+  const variance = slice.reduce((a, b) => a + (b - mean) ** 2, 0) / period;
+  const sd = Math.sqrt(variance);
+  return { middle: mean, upper: mean + mult * sd, lower: mean - mult * sd, bandwidth: (2 * mult * sd) / mean * 100 };
+}
+
+function stochastic(highs, lows, closes, period = 14, smooth = 3) {
+  if (closes.length < period + smooth) return null;
+  const kSeries = [];
+  for (let i = period - 1; i < closes.length; i++) {
+    const hh = Math.max(...highs.slice(i - period + 1, i + 1));
+    const ll = Math.min(...lows.slice(i - period + 1, i + 1));
+    kSeries.push(hh === ll ? 50 : ((closes[i] - ll) / (hh - ll)) * 100);
+  }
+  const k = kSeries[kSeries.length - 1];
+  const d = kSeries.slice(-smooth).reduce((a, b) => a + b, 0) / smooth;
+  return { k, d };
+}
+
+function atr(highs, lows, closes, period = 14) {
+  if (closes.length < period + 1) return null;
+  const trs = [];
+  for (let i = 1; i < closes.length; i++) {
+    trs.push(Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i - 1]),
+      Math.abs(lows[i] - closes[i - 1])
+    ));
+  }
+  return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
+}
+
+function adx(highs, lows, closes, period = 14) {
+  if (closes.length < period * 2) return null;
+  const plusDM = [], minusDM = [], tr = [];
+  for (let i = 1; i < closes.length; i++) {
+    const up = highs[i] - highs[i - 1];
+    const down = lows[i - 1] - lows[i];
+    plusDM.push(up > down && up > 0 ? up : 0);
+    minusDM.push(down > up && down > 0 ? down : 0);
+    tr.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
+  }
+  const smooth = arr => arr.slice(-period).reduce((a, b) => a + b, 0);
+  const atrSum = smooth(tr) || 1;
+  const plusDI = (smooth(plusDM) / atrSum) * 100;
+  const minusDI = (smooth(minusDM) / atrSum) * 100;
+  const dx = Math.abs(plusDI - minusDI) / (plusDI + minusDI || 1) * 100;
+  return { adx: dx, plusDI, minusDI };
+}
+
+// Pivot points (classic) from the most recent completed candle.
+function pivotPoints(high, low, close) {
+  const p = (high + low + close) / 3;
+  return {
+    pivot: p,
+    r1: 2 * p - low, r2: p + (high - low), r3: high + 2 * (p - low),
+    s1: 2 * p - high, s2: p - (high - low), s3: low - 2 * (high - p),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -325,16 +452,24 @@ app.get('/api/v1/candles', async (req, res) => {
 app.get('/api/v1/news', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 20;
-    const cacheKey = `news:${limit}`;
+    const symbol = (req.query.symbol || '').toUpperCase().trim();
+    const cacheKey = `news:${symbol || 'general'}:${limit}`;
     const cached = cacheGet(cacheKey);
     if (cached) return res.json(cached);
 
     const articles = [];
 
-    // Finnhub general news
+    // Finnhub news — company-specific when a symbol is given, else general.
     if (FINNHUB_KEY) {
       try {
-        const finnNews = await finnhubFetch('/news?category=general');
+        let finnNews;
+        if (symbol) {
+          const from = new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10);
+          const to = new Date().toISOString().slice(0, 10);
+          finnNews = await finnhubFetch(`/company-news?symbol=${symbol}&from=${from}&to=${to}`);
+        } else {
+          finnNews = await finnhubFetch('/news?category=general');
+        }
         if (Array.isArray(finnNews)) {
           finnNews.slice(0, limit).forEach(a => {
             articles.push({
@@ -346,7 +481,7 @@ app.get('/api/v1/news', async (req, res) => {
               publishedAt: new Date(a.datetime * 1000).toISOString(),
               sentiment: tagSentiment(a.headline),
               sentimentSource: 'heuristic',
-              relatedSymbol: extractSymbol(a.headline),
+              relatedSymbol: symbol || extractSymbol(a.headline),
             });
           });
         }
@@ -356,7 +491,7 @@ app.get('/api/v1/news', async (req, res) => {
     // Marketaux news (richer financial news with entity extraction)
     if (MARKETAUX_KEY && articles.length < limit) {
       try {
-        const mxNews = await marketauxFetch({ limit: limit - articles.length, filter_entities: true });
+        const mxNews = await marketauxFetch({ limit: limit - articles.length, filter_entities: true, ...(symbol ? { symbols: symbol } : {}) });
         if (Array.isArray(mxNews)) {
           mxNews.forEach(a => {
             const existsAlready = articles.some(
@@ -543,11 +678,13 @@ app.get('/api/v1/search', async (req, res) => {
     }
 
     if (!results.length) {
-      const allSymbols = Object.values(HEATMAP_CONSTITUENTS).flat();
-      results = allSymbols
-        .filter(s => s.startsWith(q))
+      // Fall back to the full S&P 500 universe: prefix matches first, then
+      // any symbol containing the query.
+      const prefix = SP500_ALL.filter(s => s.startsWith(q));
+      const contains = SP500_ALL.filter(s => !s.startsWith(q) && s.includes(q));
+      results = [...prefix, ...contains]
         .slice(0, 10)
-        .map(s => ({ symbol: s, name: s }));
+        .map(s => ({ symbol: s, name: `${s} · ${SYMBOL_SECTOR[s] || 'S&P 500'}` }));
     }
 
     cacheSet(cacheKey, results, 300000);
@@ -749,18 +886,57 @@ app.get('/api/v1/analyst', async (req, res) => {
     const cached = cacheGet(cacheKey);
     if (cached) return res.json(cached);
 
-    const data = await finnhubFetch(`/stock/recommendation?symbol=${symbol}`);
-    const result = {
-      symbol,
-      recommendations: (data || []).slice(0, 4).map(r => ({
-        period: r.period,
-        strongBuy: r.strongBuy,
-        buy: r.buy,
-        hold: r.hold,
-        sell: r.sell,
-        strongSell: r.strongSell,
-      })),
-    };
+    // Recommendation trends (free tier); price target & earnings are attempted
+    // and gracefully skipped if the plan doesn't include them.
+    const [recData, targetData, earningsData, quote] = await Promise.all([
+      finnhubFetch(`/stock/recommendation?symbol=${symbol}`),
+      finnhubFetch(`/stock/price-target?symbol=${symbol}`).catch(() => null),
+      finnhubFetch(`/stock/earnings?symbol=${symbol}`).catch(() => null),
+      yahooQuote(symbol).catch(() => null),
+    ]);
+
+    const recommendations = (recData || []).slice(0, 6).map(r => ({
+      period: r.period,
+      strongBuy: r.strongBuy, buy: r.buy, hold: r.hold, sell: r.sell, strongSell: r.strongSell,
+    }));
+
+    // Consensus trend: is the buy-side share rising vs the prior period?
+    let trend = null;
+    if (recommendations.length >= 2) {
+      const bullShare = r => { const t = r.strongBuy + r.buy + r.hold + r.sell + r.strongSell; return t ? (r.strongBuy + r.buy) / t : 0; };
+      const delta = bullShare(recommendations[0]) - bullShare(recommendations[1]);
+      trend = delta > 0.02 ? 'improving' : delta < -0.02 ? 'deteriorating' : 'stable';
+    }
+
+    let priceTarget = null;
+    const current = quote?.price || null;
+    if (targetData && targetData.targetMean) {
+      priceTarget = {
+        mean: targetData.targetMean, high: targetData.targetHigh, low: targetData.targetLow,
+        median: targetData.targetMedian, current: current || targetData.lastPrice || null,
+      };
+    } else {
+      // Finnhub price-target is premium; fall back to Yahoo's free analyst data.
+      const summary = await yahooQuoteSummary(symbol, 'financialData').catch(() => null);
+      const fd = summary?.financialData;
+      if (fd?.targetMeanPrice?.raw) {
+        priceTarget = {
+          mean: fd.targetMeanPrice.raw, high: fd.targetHighPrice?.raw, low: fd.targetLowPrice?.raw,
+          median: fd.targetMedianPrice?.raw, current: current || fd.currentPrice?.raw || null,
+          numberOfAnalysts: fd.numberOfAnalystOpinions?.raw,
+        };
+      }
+    }
+    if (priceTarget && priceTarget.current && priceTarget.mean) {
+      priceTarget.upside = +(((priceTarget.mean - priceTarget.current) / priceTarget.current) * 100).toFixed(2);
+    }
+
+    const earningsSurprises = (earningsData || []).slice(0, 4).map(e => ({
+      period: e.period, actual: e.actual, estimate: e.estimate,
+      surprise: e.surprise, surprisePercent: e.surprisePercent,
+    }));
+
+    const result = { symbol, recommendations, trend, priceTarget, earningsSurprises };
 
     cacheSet(cacheKey, result, 21600000);
     res.json(result);
@@ -840,6 +1016,30 @@ app.get('/api/v1/forex', async (req, res) => {
 
     cacheSet(cacheKey, result, 60000);
     res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/indices — Major market indices (S&P 500, Dow, Nasdaq, VIX, ...)
+// ---------------------------------------------------------------------------
+app.get('/api/v1/indices', async (req, res) => {
+  try {
+    const cacheKey = 'indices:all';
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const results = await Promise.allSettled(MARKET_INDICES.map(idx => yahooQuote(idx.symbol)));
+    const indices = MARKET_INDICES.map((idx, i) => {
+      const r = results[i];
+      if (r.status !== 'fulfilled') return { ...idx, price: null, change: null, changePercent: null };
+      const q = r.value;
+      return { symbol: idx.symbol, name: idx.name, short: idx.short, price: q.price, change: q.change, changePercent: q.changePercent };
+    });
+
+    cacheSet(cacheKey, indices, 30000);
+    res.json(indices);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -980,29 +1180,123 @@ app.get('/api/v1/ipo', async (req, res) => {
 app.get('/api/v1/technical', async (req, res) => {
   try {
     const symbol = (req.query.symbol || 'AAPL').toUpperCase();
-    const resolution = req.query.resolution || 'D';
-    const cacheKey = `technical:${symbol}:${resolution}`;
+    const cacheKey = `technical:${symbol}`;
     const cached = cacheGet(cacheKey);
     if (cached) return res.json(cached);
 
-    const data = await finnhubFetch(`/scan/technical-indicator?symbol=${symbol}&resolution=${resolution}`);
-    const candles = await yahooCandles(symbol, '1d', '3mo').catch(() => []);
+    // A full year of daily candles gives us enough history for every indicator.
+    const candles = await yahooCandles(symbol, '1d', '1y').catch(() => []);
+    if (candles.length < 30) {
+      return res.json({ symbol, available: false, message: 'Insufficient price history' });
+    }
 
-    let support = null, resistance = null;
-    if (candles.length > 20) {
-      const lows = candles.slice(-20).map(c => c.low);
-      const highs = candles.slice(-20).map(c => c.high);
-      support = Math.min(...lows);
-      resistance = Math.max(...highs);
+    const closes = candles.map(c => c.close);
+    const highs = candles.map(c => c.high);
+    const lows = candles.map(c => c.low);
+    const volumes = candles.map(c => c.volume);
+    const price = closes[closes.length - 1];
+    const prevCandle = candles[candles.length - 2];
+
+    // --- Moving averages ---
+    const ma = {
+      sma20: sma(closes, 20), sma50: sma(closes, 50), sma100: sma(closes, 100), sma200: sma(closes, 200),
+      ema12: ema(closes, 12), ema26: ema(closes, 26), ema50: ema(closes, 50),
+    };
+
+    // --- Oscillators & momentum ---
+    const rsi14 = rsi(closes, 14);
+    const macdVal = macd(closes);
+    const bb = bollinger(closes, 20, 2);
+    const stoch = stochastic(highs, lows, closes, 14, 3);
+    const atr14 = atr(highs, lows, closes, 14);
+    const adxVal = adx(highs, lows, closes, 14);
+    const cci = (() => {
+      const period = 20;
+      if (closes.length < period) return null;
+      const tp = candles.slice(-period).map(c => (c.high + c.low + c.close) / 3);
+      const mean = tp.reduce((a, b) => a + b, 0) / period;
+      const meanDev = tp.reduce((a, b) => a + Math.abs(b - mean), 0) / period;
+      const currentTP = tp[tp.length - 1];
+      return meanDev ? (currentTP - mean) / (0.015 * meanDev) : 0;
+    })();
+    const williamsR = (() => {
+      const period = 14;
+      if (closes.length < period) return null;
+      const hh = Math.max(...highs.slice(-period));
+      const ll = Math.min(...lows.slice(-period));
+      return hh === ll ? -50 : ((hh - price) / (hh - ll)) * -100;
+    })();
+
+    // --- 52-week range & position ---
+    const week52High = Math.max(...highs);
+    const week52Low = Math.min(...lows);
+    const rangePosition = week52High === week52Low ? 50 : ((price - week52Low) / (week52High - week52Low)) * 100;
+
+    // --- Volume ---
+    const avgVol20 = sma(volumes, 20);
+    const volumeRatio = avgVol20 ? volumes[volumes.length - 1] / avgVol20 : null;
+
+    // --- Pivot points from the last completed session ---
+    const pivots = prevCandle ? pivotPoints(prevCandle.high, prevCandle.low, prevCandle.close) : null;
+
+    // --- Signal scoring: each indicator votes buy / sell / neutral ---
+    const signals = [];
+    const vote = (name, value, signal) => signals.push({ name, value, signal });
+
+    if (rsi14 != null) vote('RSI (14)', +rsi14.toFixed(2), rsi14 > 70 ? 'sell' : rsi14 < 30 ? 'buy' : 'neutral');
+    if (macdVal) vote('MACD (12,26,9)', +macdVal.histogram.toFixed(3), macdVal.histogram > 0 ? 'buy' : macdVal.histogram < 0 ? 'sell' : 'neutral');
+    if (stoch) vote('Stochastic (14,3)', +stoch.k.toFixed(2), stoch.k > 80 ? 'sell' : stoch.k < 20 ? 'buy' : 'neutral');
+    if (cci != null) vote('CCI (20)', +cci.toFixed(2), cci > 100 ? 'sell' : cci < -100 ? 'buy' : 'neutral');
+    if (williamsR != null) vote('Williams %R', +williamsR.toFixed(2), williamsR > -20 ? 'sell' : williamsR < -80 ? 'buy' : 'neutral');
+    if (adxVal) vote('ADX (14)', +adxVal.adx.toFixed(2), adxVal.adx > 25 ? (adxVal.plusDI > adxVal.minusDI ? 'buy' : 'sell') : 'neutral');
+    if (ma.sma20 != null) vote('SMA 20', +ma.sma20.toFixed(2), price > ma.sma20 ? 'buy' : 'sell');
+    if (ma.sma50 != null) vote('SMA 50', +ma.sma50.toFixed(2), price > ma.sma50 ? 'buy' : 'sell');
+    if (ma.sma200 != null) vote('SMA 200', +ma.sma200.toFixed(2), price > ma.sma200 ? 'buy' : 'sell');
+    if (ma.ema12 != null) vote('EMA 12', +ma.ema12.toFixed(2), price > ma.ema12 ? 'buy' : 'sell');
+    if (ma.ema26 != null) vote('EMA 26', +ma.ema26.toFixed(2), price > ma.ema26 ? 'buy' : 'sell');
+    if (bb) vote('Bollinger Bands', +bb.middle.toFixed(2), price > bb.upper ? 'sell' : price < bb.lower ? 'buy' : 'neutral');
+
+    const buyCount = signals.filter(s => s.signal === 'buy').length;
+    const sellCount = signals.filter(s => s.signal === 'sell').length;
+    const neutralCount = signals.filter(s => s.signal === 'neutral').length;
+    const score = buyCount - sellCount;
+    let overall = 'NEUTRAL';
+    if (score >= 6) overall = 'STRONG BUY';
+    else if (score >= 2) overall = 'BUY';
+    else if (score <= -6) overall = 'STRONG SELL';
+    else if (score <= -2) overall = 'SELL';
+
+    // Golden / death cross detection.
+    let maCross = null;
+    if (ma.sma50 != null && ma.sma200 != null) {
+      maCross = ma.sma50 > ma.sma200 ? 'Golden Cross (bullish)' : 'Death Cross (bearish)';
     }
 
     const result = {
       symbol,
-      resolution,
-      technicalAnalysis: data?.technicalAnalysis || {},
-      trend: data?.trend || {},
-      support,
-      resistance,
+      available: true,
+      price: +price.toFixed(2),
+      summary: { overall, buy: buyCount, sell: sellCount, neutral: neutralCount, score },
+      movingAverages: {
+        sma20: ma.sma20 && +ma.sma20.toFixed(2), sma50: ma.sma50 && +ma.sma50.toFixed(2),
+        sma100: ma.sma100 && +ma.sma100.toFixed(2), sma200: ma.sma200 && +ma.sma200.toFixed(2),
+        ema12: ma.ema12 && +ma.ema12.toFixed(2), ema26: ma.ema26 && +ma.ema26.toFixed(2),
+        ema50: ma.ema50 && +ma.ema50.toFixed(2), cross: maCross,
+      },
+      oscillators: {
+        rsi14: rsi14 && +rsi14.toFixed(2),
+        macd: macdVal && { macd: +macdVal.macd.toFixed(3), signal: +macdVal.signal.toFixed(3), histogram: +macdVal.histogram.toFixed(3) },
+        stochastic: stoch && { k: +stoch.k.toFixed(2), d: +stoch.d.toFixed(2) },
+        cci20: cci != null ? +cci.toFixed(2) : null,
+        williamsR: williamsR != null ? +williamsR.toFixed(2) : null,
+        atr14: atr14 && +atr14.toFixed(2),
+        adx: adxVal && { adx: +adxVal.adx.toFixed(2), plusDI: +adxVal.plusDI.toFixed(2), minusDI: +adxVal.minusDI.toFixed(2) },
+      },
+      bollinger: bb && { upper: +bb.upper.toFixed(2), middle: +bb.middle.toFixed(2), lower: +bb.lower.toFixed(2), bandwidth: +bb.bandwidth.toFixed(2) },
+      range52w: { high: +week52High.toFixed(2), low: +week52Low.toFixed(2), position: +rangePosition.toFixed(1) },
+      volume: { latest: volumes[volumes.length - 1], avg20: avgVol20 && Math.round(avgVol20), ratio: volumeRatio && +volumeRatio.toFixed(2) },
+      pivots: pivots && Object.fromEntries(Object.entries(pivots).map(([k, v]) => [k, +v.toFixed(2)])),
+      signals,
       candleCount: candles.length,
     };
 
@@ -1024,10 +1318,12 @@ app.get('/api/v1/screener', async (req, res) => {
     if (cached) return res.json(cached);
 
     let symbols = [];
-    if (sector && HEATMAP_CONSTITUENTS[sector]) {
-      symbols = HEATMAP_CONSTITUENTS[sector];
+    if (sector && SP500_BY_SECTOR[sector]) {
+      // Full per-sector S&P 500 list (capped to keep response time reasonable).
+      symbols = SP500_BY_SECTOR[sector].slice(0, 30);
     } else {
-      symbols = Object.values(HEATMAP_CONSTITUENTS).flat();
+      // "All" scans a broad sample across every sector.
+      symbols = Object.values(SP500_BY_SECTOR).flatMap(list => list.slice(0, 10));
     }
 
     const results = await Promise.allSettled(symbols.map(s => yahooQuote(s)));

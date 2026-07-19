@@ -1,5 +1,6 @@
 import { useDashboard } from '../context/DashboardContext.jsx';
 import usePolling from '../hooks/usePolling.js';
+import { fmtPrice } from '../utils/format.js';
 
 export default function AnalystPanel() {
   const { state } = useDashboard();
@@ -8,6 +9,7 @@ export default function AnalystPanel() {
 
   const recs = data?.recommendations || [];
   const latest = recs[0];
+  const pt = data?.priceTarget;
   const total = latest ? latest.strongBuy + latest.buy + latest.hold + latest.sell + latest.strongSell : 0;
 
   const consensus = (() => {
@@ -29,8 +31,36 @@ export default function AnalystPanel() {
         <>
           <div className="analyst-consensus">
             <span className={`consensus-label ${consensusClass}`}>{consensus}</span>
-            <span className="consensus-count">{total} analysts</span>
+            <span className="consensus-count">
+              {total} analysts
+              {data.trend && <span className={`trend-tag ${data.trend === 'improving' ? 'positive' : data.trend === 'deteriorating' ? 'negative' : ''}`}>· {data.trend}</span>}
+            </span>
           </div>
+
+          {pt && pt.mean && (
+            <div className="price-target">
+              <div className="pt-row">
+                <span className="pt-label">Price Target</span>
+                <span className="pt-mean">{fmtPrice(pt.mean)}</span>
+                {pt.upside != null && (
+                  <span className={`pt-upside ${pt.upside >= 0 ? 'positive' : 'negative'}`}>
+                    {pt.upside >= 0 ? '+' : ''}{pt.upside}%
+                  </span>
+                )}
+              </div>
+              <div className="pt-range">
+                <span className="negative">L {fmtPrice(pt.low)}</span>
+                {pt.current && <span className="pt-current">Now {fmtPrice(pt.current)}</span>}
+                <span className="positive">H {fmtPrice(pt.high)}</span>
+              </div>
+              {pt.low != null && pt.high != null && pt.current != null && pt.high > pt.low && (
+                <div className="pt-track">
+                  <div className="pt-current-marker" style={{ left: `${Math.max(0, Math.min(100, ((pt.current - pt.low) / (pt.high - pt.low)) * 100))}%` }} />
+                  <div className="pt-mean-marker" style={{ left: `${Math.max(0, Math.min(100, ((pt.mean - pt.low) / (pt.high - pt.low)) * 100))}%` }} />
+                </div>
+              )}
+            </div>
+          )}
           <div className="analyst-bar">
             {latest.strongBuy > 0 && <div className="bar-segment bar-strong-buy" style={{ flex: latest.strongBuy }} title={`Strong Buy: ${latest.strongBuy}`}>{latest.strongBuy}</div>}
             {latest.buy > 0 && <div className="bar-segment bar-buy" style={{ flex: latest.buy }} title={`Buy: ${latest.buy}`}>{latest.buy}</div>}

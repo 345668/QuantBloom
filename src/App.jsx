@@ -11,6 +11,7 @@ import CalendarPanel from './components/CalendarPanel.jsx';
 import FredPanel from './components/FredPanel.jsx';
 import CryptoPanel from './components/CryptoPanel.jsx';
 import ForexPanel from './components/ForexPanel.jsx';
+import IndicesPanel from './components/IndicesPanel.jsx';
 import FundamentalsPanel from './components/FundamentalsPanel.jsx';
 import EarningsPanel from './components/EarningsPanel.jsx';
 import IpoPanel from './components/IpoPanel.jsx';
@@ -70,11 +71,12 @@ function Dashboard() {
         </div>
       </div>
 
-      {/* Row 2: News + Heatmap + Forex/Crypto */}
+      {/* Row 2: News + Heatmap + Indices/Forex/Crypto */}
       <div className="dashboard-row row-3col">
         <NewsFeedPanel />
         <HeatmapPanel />
         <div className="col-stack">
+          <IndicesPanel />
           <ForexPanel />
           <CryptoPanel />
         </div>
