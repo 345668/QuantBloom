@@ -1,4 +1,4 @@
-# Bloomberg Terminal Clone — Feature Roadmap v3
+# QuantBloom Terminal — Feature Roadmap v3
 
 ## Purpose
 v1 built the dashboard shell; v2 added 13 panels, the S&P 500 universe, market
@@ -252,10 +252,10 @@ IG and HY OAS, spread history, distress signalling. **Tier A** via FRED
 ---
 
 ## Phase 8 — Terminal UX
-*What makes it feel like a Bloomberg rather than a dashboard.*
+*What makes it feel like a professional terminal rather than a dashboard.*
 
 ### 8.1 Command Bar
-Bloomberg-style command entry — `AAPL GP`, `SPX HP`, `NVDA DES` — with
+Terminal-style command entry — `AAPL GP`, `SPX HP`, `NVDA DES` — with
 autocomplete and a discoverable function list. Keyboard-first navigation.
 
 ### 8.2 Customisable Layout

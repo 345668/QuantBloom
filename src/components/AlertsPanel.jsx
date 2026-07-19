@@ -4,14 +4,15 @@ import { loadJSON, saveJSON } from '../utils/storage.js';
 
 export default function AlertsPanel() {
   const { state } = useDashboard();
-  const [alerts, setAlerts] = useState(() => loadJSON('bloomberg_alerts') || []);
-  const [triggered, setTriggered] = useState(() => loadJSON('bloomberg_triggered') || []);
+  // Fall back to the legacy key so alerts saved before the rename survive.
+  const [alerts, setAlerts] = useState(() => loadJSON('quantbloom_alerts') || loadJSON('bloomberg_alerts') || []);
+  const [triggered, setTriggered] = useState(() => loadJSON('quantbloom_triggered') || loadJSON('bloomberg_triggered') || []);
   const [tab, setTab] = useState('active');
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ symbol: '', condition: 'above', price: '' });
 
-  useEffect(() => { saveJSON('bloomberg_alerts', alerts); }, [alerts]);
-  useEffect(() => { saveJSON('bloomberg_triggered', triggered); }, [triggered]);
+  useEffect(() => { saveJSON('quantbloom_alerts', alerts); }, [alerts]);
+  useEffect(() => { saveJSON('quantbloom_triggered', triggered); }, [triggered]);
 
   const addAlert = () => {
     if (!form.symbol || !form.price) return;

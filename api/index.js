@@ -1794,7 +1794,7 @@ var server_default = app;
 var isDirectRun = process.argv[1] && (process.argv[1].endsWith("server.js") || process.argv[1].endsWith("server"));
 if (isDirectRun) {
   app.listen(port, () => {
-    console.log(`Bloomberg Terminal API running on http://localhost:${port}`);
+    console.log(`QuantBloom Terminal API running on http://localhost:${port}`);
   });
 }
 

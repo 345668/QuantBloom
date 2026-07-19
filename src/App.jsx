@@ -45,7 +45,7 @@ function Dashboard() {
       {/* Nav Bar */}
       <nav className="nav-bar">
         <div className="nav-left">
-          <span className="terminal-logo">BLOOMBERG TERMINAL</span>
+          <span className="terminal-logo">QUANTBLOOM TERMINAL</span>
           <button className="nav-btn watchlist-btn" onClick={() => setShowWatchlist(true)}>WATCHLIST</button>
         </div>
         <div className="nav-right">

@@ -37,7 +37,7 @@
 ### D. Component Library
 
 **Core Terminal Components**:
-- **Command Bar**: Top navigation with ticker search and Bloomberg-style shortcuts
+- **Command Bar**: Top navigation with ticker search and terminal-style command shortcuts
 - **Multi-Panel Layout**: Resizable grid system with 6-8 simultaneous data windows
 - **Real-time Data Tables**: Dense, sortable tables with color-coded price changes
 - **Chart Panels**: Dark-themed candlestick charts with orange accent lines
@@ -50,7 +50,7 @@
 - **Status Indicators**: Small colored dots for market status (open/closed/pre-market)
 - **Price Display Cards**: Large numerical displays with change indicators
 
-### E. Authentic Bloomberg Features
+### E. Professional Terminal Features
 
 **Visual Authentication**:
 - Terminal-style window titles with function codes (like "EQUITY SCREENING <GO>")
@@ -79,4 +79,4 @@
 4. **Professional Minimalism**: No decorative elements - every pixel serves a function
 5. **Rapid Navigation**: Keyboard-first interface with visible shortcuts
 
-This design creates an authentic Bloomberg terminal experience prioritizing data density, professional aesthetics, and rapid information access for serious financial users.
+This design creates an authentic professional terminal experience prioritizing data density, professional aesthetics, and rapid information access for serious financial users.

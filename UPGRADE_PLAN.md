@@ -1,4 +1,4 @@
-# Bloomberg Terminal Clone — Upgrade Plan v2
+# QuantBloom Terminal — Upgrade Plan v2
 
 ## Current State (v1)
 The app has 7 panels: Chart (candlestick + indicators), News Feed, Heatmap, Economic Calendar, FRED Economic Data, Ticker Bar, and Watchlist Modal. Backend serves 11 API routes covering quotes, candles, news, heatmap, calendar, search, and FRED data via Finnhub, Marketaux, NewsAPI, Alpha Vantage, Yahoo Finance, and FRED APIs.

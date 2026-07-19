@@ -1,6 +1,6 @@
-# Bloomberg Terminal Clone — Full Build Plan
+# QuantBloom Terminal — Full Build Plan
 
-> **Project:** Bloomberg-Style Day Trading Dashboard
+> **Project:** QuantBloom Terminal — Day Trading Dashboard
 > **Date:** 2026-07-18
 > **Source:** Traycer AI Epic Brief, Core Flows, Tech Plan & Ticket Breakdown (extracted from planning session screenshots)
 > **Original Prompt:** "I need a financial dashboard app like the Bloomberg terminal. It must show real-time stock prices, news, and other pertinent information that would be needed when day trading. The data must come from real sources that are not paywalled and be presented in a visual style that is commonly seen in financial dashboards like the Bloomberg dashboard. Give deployment options as well."
@@ -40,7 +40,7 @@
 
 ## 1. Summary
 
-This project delivers a Bloomberg Terminal-inspired financial dashboard for individual day traders. It is a single-user, local-first web application that aggregates real-time market data from free, non-paywalled sources and presents it in a dense, information-rich multi-panel interface. The goal is to give a retail day trader a professional-grade information environment — live prices, candlestick charts with technical indicators, market-wide sector performance, financial news with sentiment context, and an economic calendar — without requiring a Bloomberg subscription or any paid data feed.
+This project delivers a professional terminal-inspired financial dashboard for individual day traders. It is a single-user, local-first web application that aggregates real-time market data from free, non-paywalled sources and presents it in a dense, information-rich multi-panel interface. The goal is to give a retail day trader a professional-grade information environment — live prices, candlestick charts with technical indicators, market-wide sector performance, financial news with sentiment context, and an economic calendar — without requiring a Bloomberg subscription or any paid data feed.
 
 ---
 
@@ -77,7 +77,7 @@ Professional trading terminals (Bloomberg, Refinitiv) cost thousands of dollars 
 - Market news feed with Bullish/Bearish/Neutral sentiment tags
 - S&P 500 sector heatmap (11 GICS sectors, top constituent stocks)
 - Economic calendar (earnings, Fed meetings, macro releases)
-- Classic Bloomberg dark theme (amber/orange on black) + light mode toggle
+- Classic terminal dark theme (amber/orange on black) + light mode toggle
 - Deployment configs for Vercel (frontend) and Railway/Render (backend)
 
 ### Out of Scope (v1)
