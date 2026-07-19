@@ -10,6 +10,8 @@ export function usePolling(url, intervalMs) {
   urlRef.current = url;
 
   const doFetch = useCallback(async () => {
+    // A null/empty url means "nothing to poll yet" (e.g. an empty portfolio).
+    if (!urlRef.current) { setLoading(false); return; }
     try {
       const resp = await fetch(urlRef.current);
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -33,6 +35,7 @@ export function usePolling(url, intervalMs) {
   }, []);
 
   useEffect(() => {
+    if (!url) { setLoading(false); return; }
     setLoading(true);
     doFetch();
     timerRef.current = setInterval(doFetch, intervalMs);

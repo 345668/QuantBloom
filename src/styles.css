@@ -1597,3 +1597,66 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
 .index-name { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
 .index-price { text-align: right; font-weight: 600; }
 .index-change { text-align: right; font-weight: 600; font-size: 10px; }
+
+/* =========================================================================
+   v3 Phase 1 — Portfolio & Positions
+   ========================================================================= */
+.pf-panel { max-height: 560px; }
+.pf-add-btn {
+  font-size: 10px; padding: 2px 8px; border-radius: 2px; font-weight: 700;
+  background: var(--accent-up); color: #fff;
+}
+.pf-form {
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  padding: 6px; margin-bottom: 8px;
+}
+.pf-form-row { display: flex; gap: 4px; margin-bottom: 4px; }
+.pf-input, .pf-select {
+  flex: 1; min-width: 0; padding: 4px 6px; font-family: inherit; font-size: 11px;
+  background: var(--bg-input); border: 1px solid var(--border); color: var(--text-body);
+}
+.pf-submit {
+  width: 100%; padding: 4px; font-size: 10px; font-weight: 700; border-radius: 2px;
+  background: var(--accent-blue); color: #fff;
+}
+.pf-error { color: var(--accent-down); font-size: 10px; margin-bottom: 4px; }
+
+.pf-stats { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 8px; }
+.pf-stat {
+  background: var(--bg-secondary); border: 1px solid var(--border);
+  padding: 5px 6px; display: flex; flex-direction: column;
+}
+.pf-stat-label { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
+.pf-stat-value { font-size: 14px; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.pf-stat-value.positive { color: var(--accent-up); }
+.pf-stat-value.negative { color: var(--accent-down); }
+.pf-stat-sub { font-size: 9px; font-weight: 600; }
+
+.pf-table-wrap { overflow-x: auto; }
+.pf-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+.pf-table th {
+  text-align: right; padding: 3px 4px; color: var(--text-dim);
+  font-size: 9px; text-transform: uppercase; border-bottom: 1px solid var(--border-bright);
+}
+.pf-table th:first-child { text-align: left; }
+.pf-table td { text-align: right; padding: 3px 4px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.pf-table td:first-child { text-align: left; }
+.pf-table tbody tr { cursor: pointer; }
+.pf-table tbody tr:hover { background: var(--bg-hover); }
+.pf-symbol { color: var(--text-primary); font-weight: 700; }
+.pf-pct { font-size: 9px; opacity: 0.8; }
+
+.pf-lots { margin-top: 8px; }
+.pf-lots summary {
+  font-size: 10px; color: var(--text-dim); cursor: pointer;
+  text-transform: uppercase; letter-spacing: 0.06em; padding: 2px 0;
+}
+.pf-lot-row {
+  display: grid; grid-template-columns: 34px 46px 1fr auto 16px;
+  gap: 6px; align-items: center; font-size: 10px;
+  padding: 2px 0; border-bottom: 1px solid var(--border);
+}
+.pf-lot-row span:first-child { font-weight: 700; }
+.pf-lot-sym { color: var(--text-primary); font-weight: 600; }
+.pf-lot-date { color: var(--text-dim); font-size: 9px; }
+.pf-lot-del { color: var(--accent-down); font-weight: 700; font-size: 12px; line-height: 1; }

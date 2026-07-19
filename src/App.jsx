@@ -21,6 +21,7 @@ import SectorPanel from './components/SectorPanel.jsx';
 import RiskPanel from './components/RiskPanel.jsx';
 import AlertsPanel from './components/AlertsPanel.jsx';
 import OptionsPanel from './components/OptionsPanel.jsx';
+import PortfolioPanel from './components/PortfolioPanel.jsx';
 
 function Dashboard() {
   const { state, dispatch } = useDashboard();
@@ -98,10 +99,11 @@ function Dashboard() {
         <ScreenerPanel />
       </div>
 
-      {/* Row 5: Options + Risk + Alerts */}
-      <div className="dashboard-row row-3col">
-        <OptionsPanel />
+      {/* Row 5: Portfolio + Risk + Options + Alerts */}
+      <div className="dashboard-row row-4col">
+        <PortfolioPanel />
         <RiskPanel />
+        <OptionsPanel />
         <AlertsPanel />
       </div>
 

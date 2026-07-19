@@ -768,6 +768,48 @@ async function marketauxFetch(params = {}) {
   const data = await resp.json();
   return data.data || [];
 }
+var QUOTE_BATCH_SIZE = 50;
+async function yahooQuoteBatch(symbols) {
+  if (!symbols.length) return [];
+  const auth = await getYahooAuth();
+  const out = [];
+  for (let i = 0; i < symbols.length; i += QUOTE_BATCH_SIZE) {
+    const chunk = symbols.slice(i, i + QUOTE_BATCH_SIZE);
+    let got = false;
+    for (const host of ["query2.finance.yahoo.com", "query1.finance.yahoo.com"]) {
+      try {
+        const crumbParam = auth?.crumb ? `&crumb=${encodeURIComponent(auth.crumb)}` : "";
+        const url = `https://${host}/v7/finance/quote?symbols=${chunk.join(",")}${crumbParam}`;
+        const headers = { "User-Agent": "Mozilla/5.0", "Accept": "application/json" };
+        if (auth?.cookie) headers["Cookie"] = auth.cookie;
+        const resp = await fetch(url, { headers });
+        if (!resp.ok) continue;
+        const data = await resp.json();
+        const rows = data.quoteResponse?.result;
+        if (!Array.isArray(rows)) continue;
+        for (const r of rows) {
+          if (r.regularMarketPrice == null) continue;
+          out.push({
+            symbol: r.symbol,
+            name: r.shortName || r.longName || r.symbol,
+            price: r.regularMarketPrice,
+            change: r.regularMarketChange ?? 0,
+            changePercent: r.regularMarketChangePercent ?? 0,
+            volume: r.regularMarketVolume ?? 0
+          });
+        }
+        got = true;
+        break;
+      } catch {
+      }
+    }
+    if (!got) {
+      const settled = await Promise.allSettled(chunk.map((s) => yahooQuote(s)));
+      for (const r of settled) if (r.status === "fulfilled") out.push(r.value);
+    }
+  }
+  return out;
+}
 async function alphaVantageQuote(symbol) {
   if (!ALPHA_VANTAGE_KEY) return null;
   const resp = await fetch(
@@ -795,24 +837,53 @@ app.get("/api/v1/quotes", async (req, res) => {
     const cacheKey = `quotes:${symbols.join(",")}`;
     const cached = cacheGet(cacheKey);
     if (cached) return res.json(cached);
-    const quotes = await Promise.all(
-      symbols.map(async (sym) => {
-        try {
-          return await yahooQuote(sym);
-        } catch {
-          try {
-            const av = await alphaVantageQuote(sym);
-            if (av) return av;
-          } catch {
-          }
-          return { symbol: sym, price: null, change: 0, changePercent: 0, volume: 0, error: true };
-        }
-      })
-    );
+    const fetched = await yahooQuoteBatch(symbols);
+    const bySymbol = new Map(fetched.map((q) => [q.symbol, q]));
+    const quotes = await Promise.all(symbols.map(async (sym) => {
+      const hit = bySymbol.get(sym);
+      if (hit) return hit;
+      try {
+        const av = await alphaVantageQuote(sym);
+        if (av) return av;
+      } catch {
+      }
+      return { symbol: sym, price: null, change: 0, changePercent: 0, volume: 0, error: true };
+    }));
     cacheSet(cacheKey, quotes, 8e3);
     res.json(quotes);
   } catch (err) {
     res.status(500).json({ error: err.message, stale: false });
+  }
+});
+app.get("/api/v1/ticker", async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 120, SP500_ALL.length);
+    const cacheKey = `ticker:${limit}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+    const lists = Object.values(SP500_BY_SECTOR);
+    const symbols = [];
+    for (let i = 0; symbols.length < limit; i++) {
+      let added = false;
+      for (const list of lists) {
+        if (i < list.length && symbols.length < limit) {
+          symbols.push(list[i]);
+          added = true;
+        }
+      }
+      if (!added) break;
+    }
+    const quotes = (await yahooQuoteBatch(symbols)).filter((q) => q.price != null).map((q) => ({
+      symbol: q.symbol,
+      price: q.price,
+      change: q.change,
+      changePercent: q.changePercent,
+      sector: SYMBOL_SECTOR[q.symbol] || null
+    }));
+    cacheSet(cacheKey, quotes, 3e4);
+    res.json(quotes);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 app.get("/api/v1/candles", async (req, res) => {
