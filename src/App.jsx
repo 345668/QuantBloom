@@ -31,6 +31,9 @@ import MarketsPanel from './components/MarketsPanel.jsx';
 import ComparePanel from './components/ComparePanel.jsx';
 import VaRPanel from './components/VaRPanel.jsx';
 import FactorPanel from './components/FactorPanel.jsx';
+import OptimizerPanel from './components/OptimizerPanel.jsx';
+import AttributionPanel from './components/AttributionPanel.jsx';
+import DCFPanel from './components/DCFPanel.jsx';
 import StressTestPanel from './components/StressTestPanel.jsx';
 import StrategyBuilder from './components/StrategyBuilder.jsx';
 
@@ -139,7 +142,14 @@ function Dashboard() {
         <StrategyBuilder />
       </div>
 
-      {/* Row 8: Financials + Options */}
+      {/* Row 8: Attribution + Optimiser + DCF */}
+      <div className="dashboard-row row-3col">
+        <AttributionPanel />
+        <OptimizerPanel />
+        <DCFPanel />
+      </div>
+
+      {/* Row 9: Financials + Options */}
       <div className="dashboard-row row-2col">
         <FinancialsPanel />
         <OptionsPanel />

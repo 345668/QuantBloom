@@ -6,6 +6,7 @@ import { SP500_BY_SECTOR, MARKET_INDICES, SP500_ALL, SYMBOL_SECTOR } from './sp5
 import { INSTRUMENTS, INSTRUMENTS_BY_CLASS, INSTRUMENT_BY_SYMBOL, ASSET_CLASSES } from './instruments.js';
 import { greeks as bsGreeks, impliedVol, yearsToExpiry } from './blackscholes.js';
 import { ols, pValue } from './regression.js';
+import { covariance, efficientFrontier, portfolioVariance, minVariancePortfolio, tangencyPortfolio } from './portfolio-math.js';
 
 dotenv.config();
 
@@ -1741,6 +1742,348 @@ app.get('/api/v1/analytics/var', async (req, res) => {
     };
 
     cacheSet(cacheKey, result, 900000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/analytics/optimize?symbols=..&values=..&range=2y
+// Mean-variance optimisation: efficient frontier, min-variance and max-Sharpe
+// portfolios, plotted against where the user actually sits today.
+// ---------------------------------------------------------------------------
+app.get('/api/v1/analytics/optimize', async (req, res) => {
+  try {
+    const symbols = (req.query.symbols || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 12);
+    const values = (req.query.values || '').split(',').map(v => parseFloat(v) || 0);
+    const range = ['1y', '2y', '5y'].includes(req.query.range) ? req.query.range : '2y';
+    if (symbols.length < 2) return res.json({ available: false, message: 'Need at least 2 holdings' });
+
+    const cacheKey = `optimize:${symbols.join(',')}:${values.join(',')}:${range}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const [settled, rfObs] = await Promise.all([
+      Promise.allSettled(symbols.map(s => yahooCandles(s, '1d', range))),
+      fredFetch('DGS3MO', { limit: 5 }).catch(() => null),
+    ]);
+
+    const retsBy = {};
+    settled.forEach((r, i) => {
+      if (r.status !== 'fulfilled' || r.value.length < 60) return;
+      const closes = r.value.map(c => c.close);
+      const out = [];
+      for (let j = 1; j < closes.length; j++) {
+        if (closes[j] && closes[j - 1]) out.push((closes[j] - closes[j - 1]) / closes[j - 1]);
+      }
+      retsBy[symbols[i]] = out;
+    });
+
+    const valid = symbols.filter(s => retsBy[s]);
+    if (valid.length < 2) return res.json({ available: false, message: 'Insufficient price history' });
+
+    const len = Math.min(...valid.map(s => retsBy[s].length));
+    const series = valid.map(s => retsBy[s].slice(-len));
+
+    const cov = covariance(series);
+    const meanDaily = series.map(s => s.reduce((a, b) => a + b, 0) / s.length);
+    const rfAnnual = (() => {
+      const v = (rfObs || []).find(o => o.value !== '.');
+      return v ? parseFloat(v.value) / 100 : 0.045;
+    })();
+
+    const frontier = efficientFrontier(cov, meanDaily, rfAnnual / 252, 24);
+    if (!frontier) return res.json({ available: false, message: 'Covariance matrix is singular (holdings too similar)' });
+
+    const ann = (w) => {
+      const r = w.reduce((s, v, i) => s + v * meanDaily[i], 0) * 252 * 100;
+      const risk = Math.sqrt(portfolioVariance(w, cov)) * Math.sqrt(252) * 100;
+      return { return: +r.toFixed(2), risk: +risk.toFixed(2), sharpe: risk ? +((r - rfAnnual * 100) / risk).toFixed(2) : null };
+    };
+
+    const describe = (w, label) => w && ({
+      label,
+      weights: valid.map((s, i) => ({ symbol: s, weight: +(w[i] * 100).toFixed(2) })),
+      ...ann(w),
+      // Negative weights are short positions; long-only investors can't hold these.
+      requiresShorting: w.some(x => x < -0.0001),
+    });
+
+    // Where the user sits today.
+    const totalValue = valid.reduce((s, sym) => s + (values[symbols.indexOf(sym)] || 0), 0);
+    const currentW = totalValue > 0
+      ? valid.map(s => (values[symbols.indexOf(s)] || 0) / totalValue)
+      : valid.map(() => 1 / valid.length);
+    const equalW = valid.map(() => 1 / valid.length);
+
+    const result = {
+      available: true,
+      symbols: valid, range, observations: len,
+      riskFreeRate: +(rfAnnual * 100).toFixed(2),
+      frontier: frontier.points.map(p => ({
+        risk: +(p.risk * Math.sqrt(252) * 100).toFixed(3),
+        return: +(p.return * 252 * 100).toFixed(3),
+      })),
+      portfolios: {
+        current: describe(currentW, totalValue > 0 ? 'Current' : 'Equal weight (no values)'),
+        minVariance: describe(frontier.minVariance, 'Minimum variance'),
+        maxSharpe: describe(frontier.tangency, 'Maximum Sharpe'),
+        equalWeight: describe(equalW, 'Equal weight'),
+      },
+      methodology: 'Unconstrained Markowitz mean-variance on daily returns; expected returns are historical averages.',
+    };
+
+    cacheSet(cacheKey, result, 900000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/valuation/dcf?symbol=AAPL&growth=..&wacc=..&terminal=..
+// Discounted cash flow on reported free cash flow, with a sensitivity grid.
+// ---------------------------------------------------------------------------
+app.get('/api/v1/valuation/dcf', async (req, res) => {
+  try {
+    const symbol = (req.query.symbol || 'AAPL').toUpperCase();
+
+    // parseFloat(undefined) is NaN, and ?? does NOT catch NaN — so a missing
+    // query param would otherwise poison every downstream calculation.
+    const num = (v, fallback) => {
+      const n = parseFloat(v);
+      return Number.isFinite(n) ? n : fallback;
+    };
+    const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+
+    const growthRaw = num(req.query.growth, null);
+    const growth = growthRaw == null ? null : clamp(growthRaw, -50, 100);
+    const wacc = clamp(num(req.query.wacc, 9), 3, 30);
+    const terminal = clamp(num(req.query.terminal, 2.5), 0, 6);
+    const years = clamp(Math.round(num(req.query.years, 5)), 3, 10);
+
+    const cacheKey = `dcf:${symbol}:${growth}:${wacc}:${terminal}:${years}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const [fin, profile, quote] = await Promise.all([
+      finnhubFetch(`/stock/financials-reported?symbol=${symbol}&freq=annual`),
+      finnhubFetch(`/stock/profile2?symbol=${symbol}`),
+      yahooQuote(symbol).catch(() => null),
+    ]);
+
+    const reports = (fin?.data || []).slice(0, 6);
+    if (!reports.length) {
+      // Funds and indices have no cash flows of their own, so a DCF is not a
+      // "missing data" problem — it's the wrong tool for the instrument.
+      const meta = INSTRUMENT_BY_SYMBOL[symbol];
+      const isFund = meta && meta.class !== 'Index';
+      return res.json({
+        symbol, available: false,
+        message: meta
+          ? `${symbol} is ${isFund ? 'a fund/ETF' : 'an index'}, not an operating company — a DCF needs company cash flows. Select a stock.`
+          : 'No filings available for this symbol',
+      });
+    }
+
+    // Free cash flow = operating cash flow − capital expenditure. Concept
+    // names vary by filer, so match on concept first then fall back to label.
+    const pick = (report, patterns) => {
+      const cf = report.report?.cf || [];
+      for (const p of patterns) {
+        const hit = cf.find(i => p.test(i.concept || '') || p.test(i.label || ''));
+        if (hit && typeof hit.value === 'number') return hit.value;
+      }
+      return null;
+    };
+
+    const history = reports.map(r => {
+      const ocf = pick(r, [
+        /NetCashProvidedByUsedInOperatingActivities$/i,
+        /NetCashProvidedByUsedInOperatingActivitiesContinuingOperations/i,
+        /cash generated by operating activities/i,
+        /net cash.*operating/i,
+      ]);
+      const capex = pick(r, [
+        /PaymentsToAcquirePropertyPlantAndEquipment/i,
+        /PaymentsToAcquireProductiveAssets/i,
+        /purchases? of property/i,
+        /capital expenditure/i,
+      ]);
+      return {
+        year: r.year,
+        operatingCashFlow: ocf,
+        capex: capex != null ? Math.abs(capex) : null,
+        freeCashFlow: (ocf != null && capex != null) ? ocf - Math.abs(capex) : null,
+      };
+    }).filter(h => h.freeCashFlow != null);
+
+    if (history.length < 2) {
+      return res.json({ symbol, available: false, message: 'Could not derive free cash flow from filings' });
+    }
+
+    const latestFcf = history[0].freeCashFlow;
+    // Historical FCF CAGR as the default growth assumption.
+    const oldest = history[history.length - 1];
+    const spanYears = Math.max(history[0].year - oldest.year, 1);
+    const histCagr = (oldest.freeCashFlow > 0 && latestFcf > 0)
+      ? (Math.pow(latestFcf / oldest.freeCashFlow, 1 / spanYears) - 1) * 100
+      : null;
+    // Clamp the default: extrapolating an extreme historical CAGR forever is
+    // the fastest way to produce a nonsense valuation.
+    const growthPct = growth != null ? growth
+      : histCagr != null ? Math.max(Math.min(histCagr, 15), -5) : 5;
+
+    const shares = profile?.shareOutstanding ? profile.shareOutstanding * 1e6 : null;
+    const price = quote?.price ?? null;
+
+    const runDcf = (g, w, tg) => {
+      if (w / 100 <= tg / 100) return null; // Gordon growth breaks down
+      let pv = 0;
+      let fcf = latestFcf;
+      const flows = [];
+      for (let t = 1; t <= years; t++) {
+        fcf = fcf * (1 + g / 100);
+        const disc = fcf / Math.pow(1 + w / 100, t);
+        pv += disc;
+        flows.push({ year: t, fcf, discounted: disc });
+      }
+      const terminalFcf = fcf * (1 + tg / 100);
+      const terminalValue = terminalFcf / (w / 100 - tg / 100);
+      const pvTerminal = terminalValue / Math.pow(1 + w / 100, years);
+      const enterprise = pv + pvTerminal;
+      return { flows, pvExplicit: pv, terminalValue, pvTerminal, enterprise,
+        perShare: shares ? enterprise / shares : null };
+    };
+
+    const base = runDcf(growthPct, wacc, terminal);
+    if (!base) return res.json({ symbol, available: false, message: 'WACC must exceed terminal growth' });
+
+    // Sensitivity grid across WACC × terminal growth.
+    const waccRange = [-2, -1, 0, 1, 2].map(d => +(wacc + d).toFixed(1));
+    const termRange = [-1, -0.5, 0, 0.5, 1].map(d => +(terminal + d).toFixed(1));
+    const sensitivity = waccRange.map(w => ({
+      wacc: w,
+      cells: termRange.map(tg => {
+        const r = runDcf(growthPct, w, tg);
+        return { terminal: tg, perShare: r?.perShare != null ? +r.perShare.toFixed(2) : null };
+      }),
+    }));
+
+    const fair = base.perShare;
+    const result = {
+      symbol, available: true,
+      assumptions: { growthPercent: +growthPct.toFixed(2), wacc, terminalGrowth: terminal, years,
+        historicalFcfCagr: histCagr != null ? +histCagr.toFixed(2) : null },
+      history: history.map(h => ({ ...h,
+        freeCashFlow: +(h.freeCashFlow / 1e9).toFixed(2),
+        operatingCashFlow: +(h.operatingCashFlow / 1e9).toFixed(2),
+        capex: +(h.capex / 1e9).toFixed(2) })),
+      latestFcfBillions: +(latestFcf / 1e9).toFixed(2),
+      sharesOutstanding: shares,
+      enterpriseValueBillions: +(base.enterprise / 1e9).toFixed(2),
+      terminalSharePercent: +((base.pvTerminal / base.enterprise) * 100).toFixed(1),
+      fairValuePerShare: fair != null ? +fair.toFixed(2) : null,
+      currentPrice: price,
+      upsidePercent: (fair != null && price) ? +(((fair - price) / price) * 100).toFixed(1) : null,
+      termRange, sensitivity,
+      methodology: 'FCF = operating cash flow − capex, grown at the assumed rate, discounted at WACC, with a Gordon-growth terminal value.',
+    };
+
+    cacheSet(cacheKey, result, 3600000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/portfolio/performance?symbols=..&values=..&costs=..&benchmark=SPY
+// Contribution attribution: which positions and sectors actually drove return.
+// ---------------------------------------------------------------------------
+app.get('/api/v1/portfolio/performance', async (req, res) => {
+  try {
+    const symbols = (req.query.symbols || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 20);
+    const values = (req.query.values || '').split(',').map(v => parseFloat(v) || 0);
+    const costs = (req.query.costs || '').split(',').map(v => parseFloat(v) || 0);
+    const benchmark = (req.query.benchmark || 'SPY').toUpperCase();
+    const range = ['1mo', '3mo', '6mo', '1y', '2y'].includes(req.query.range) ? req.query.range : '1y';
+    if (!symbols.length) return res.json({ available: false, message: 'No positions' });
+
+    const cacheKey = `perf:${symbols.join(',')}:${values.join(',')}:${costs.join(',')}:${benchmark}:${range}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const [settled, benchCandles] = await Promise.all([
+      Promise.allSettled(symbols.map(s => yahooCandles(s, '1d', range))),
+      yahooCandles(benchmark, '1d', range).catch(() => []),
+    ]);
+
+    const totalValue = values.reduce((a, b) => a + b, 0);
+    if (totalValue <= 0) return res.json({ available: false, message: 'No position values' });
+
+    const positions = [];
+    symbols.forEach((s, i) => {
+      const r = settled[i];
+      if (r.status !== 'fulfilled' || r.value.length < 2) return;
+      const closes = r.value.map(c => c.close).filter(Boolean);
+      const periodReturn = ((closes[closes.length - 1] - closes[0]) / closes[0]) * 100;
+      const weight = values[i] / totalValue;
+      const cost = costs[i] || 0;
+      positions.push({
+        symbol: s,
+        sector: SYMBOL_SECTOR[s] || INSTRUMENT_BY_SYMBOL[s]?.class || 'Other',
+        value: values[i],
+        weight: +(weight * 100).toFixed(2),
+        periodReturn: +periodReturn.toFixed(2),
+        // Contribution = weight x return. These sum to the portfolio return,
+        // which is what makes attribution additive and auditable.
+        contribution: +(weight * periodReturn).toFixed(3),
+        // Since-inception P&L where a cost basis was supplied.
+        unrealisedPercent: cost > 0 ? +(((values[i] - cost) / cost) * 100).toFixed(2) : null,
+      });
+    });
+
+    if (!positions.length) return res.json({ available: false, message: 'No price history' });
+
+    const portfolioReturn = positions.reduce((s, p) => s + p.contribution, 0);
+
+    const bCloses = benchCandles.map(c => c.close).filter(Boolean);
+    const benchReturn = bCloses.length > 1
+      ? ((bCloses[bCloses.length - 1] - bCloses[0]) / bCloses[0]) * 100 : null;
+
+    // Sector-level rollup.
+    const bySector = {};
+    for (const p of positions) {
+      const s = (bySector[p.sector] ||= { sector: p.sector, weight: 0, contribution: 0, positions: 0 });
+      s.weight += p.weight;
+      s.contribution += p.contribution;
+      s.positions++;
+    }
+    const sectors = Object.values(bySector).map(s => ({
+      ...s,
+      weight: +s.weight.toFixed(2),
+      contribution: +s.contribution.toFixed(3),
+    })).sort((a, b) => b.contribution - a.contribution);
+
+    const sorted = [...positions].sort((a, b) => b.contribution - a.contribution);
+
+    const result = {
+      available: true,
+      range, benchmark,
+      portfolioValue: +totalValue.toFixed(2),
+      portfolioReturn: +portfolioReturn.toFixed(2),
+      benchmarkReturn: benchReturn != null ? +benchReturn.toFixed(2) : null,
+      excessReturn: benchReturn != null ? +(portfolioReturn - benchReturn).toFixed(2) : null,
+      positions: sorted,
+      sectors,
+      topContributors: sorted.slice(0, 5),
+      topDetractors: sorted.slice(-5).reverse().filter(p => p.contribution < 0),
+      methodology: 'Contribution = position weight x period return; contributions sum to the portfolio return.',
+    };
+
+    cacheSet(cacheKey, result, 300000);
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
