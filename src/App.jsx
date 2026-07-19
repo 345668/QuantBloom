@@ -36,6 +36,7 @@ import AttributionPanel from './components/AttributionPanel.jsx';
 import DCFPanel from './components/DCFPanel.jsx';
 import StressTestPanel from './components/StressTestPanel.jsx';
 import StrategyBuilder from './components/StrategyBuilder.jsx';
+import BotPanel from './components/BotPanel.jsx';
 
 function Dashboard() {
   const { state, dispatch } = useDashboard();
@@ -86,21 +87,24 @@ function Dashboard() {
         </div>
       </div>
 
-      {/* Row 2: Markets board + Compare + Indices */}
+      {/* Row 2: Bot + Markets board + Compare */}
       <div className="dashboard-row row-3col">
+        <BotPanel />
         <MarketsPanel />
         <ComparePanel />
-        <IndicesPanel />
       </div>
 
-      {/* Row 3: News + Heatmap + Forex/Crypto */}
+      {/* Row 2b: Indices */}
       <div className="dashboard-row row-3col">
+        <IndicesPanel />
+        <ForexPanel />
+        <CryptoPanel />
+      </div>
+
+      {/* Row 3: News + Heatmap */}
+      <div className="dashboard-row row-2col">
         <NewsFeedPanel />
         <HeatmapPanel />
-        <div className="col-stack">
-          <ForexPanel />
-          <CryptoPanel />
-        </div>
       </div>
 
       {/* Row 3: FRED + Calendar + Earnings + IPO */}

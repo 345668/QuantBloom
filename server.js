@@ -7,6 +7,8 @@ import { INSTRUMENTS, INSTRUMENTS_BY_CLASS, INSTRUMENT_BY_SYMBOL, ASSET_CLASSES 
 import { greeks as bsGreeks, impliedVol, yearsToExpiry } from './blackscholes.js';
 import { ols, pValue } from './regression.js';
 import { covariance, efficientFrontier, portfolioVariance, minVariancePortfolio, tangencyPortfolio } from './portfolio-math.js';
+import * as bot from './bot/engine.js';
+import * as broker from './bot/alpaca.js';
 
 dotenv.config();
 
@@ -2955,6 +2957,93 @@ app.get('/api/v1/options', async (req, res) => {
   } catch (err) {
     // Never 500 the dashboard — return an empty chain the panel can render.
     res.json({ symbol: (req.query.symbol || 'AAPL').toUpperCase(), expirationDates: [], currentPrice: null, calls: [], puts: [] });
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// Trading bot (PAPER trading only)
+// ---------------------------------------------------------------------------
+
+// Internal helpers so the engine reuses our own analytics rather than
+// re-implementing them.
+const botFetchTechnical = async (symbol) => {
+  const resp = await fetch(`http://127.0.0.1:${port}/api/v1/technical?symbol=${symbol}`);
+  return resp.ok ? resp.json() : null;
+};
+const botFetchNews = async (symbol) => {
+  const resp = await fetch(`http://127.0.0.1:${port}/api/v1/news?symbol=${symbol}&limit=5`);
+  return resp.ok ? resp.json() : [];
+};
+
+app.get('/api/v1/bot/status', async (req, res) => {
+  try {
+    const state = bot.getState();
+    let account = null, positions = [], clock = null;
+    if (state.brokerConfigured) {
+      [account, positions, clock] = await Promise.all([
+        broker.getAccount().catch(() => null),
+        broker.getPositions().catch(() => []),
+        broker.getClock().catch(() => null),
+      ]);
+    }
+    res.json({ ...state, account, positions, marketOpen: clock?.isOpen ?? null, nextOpen: clock?.nextOpen ?? null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// The on/off switch.
+app.post('/api/v1/bot/toggle', (req, res) => {
+  const enabled = req.body?.enabled;
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled must be boolean' });
+  const result = bot.setEnabled(enabled);
+  res.status(result.ok ? 200 : 409).json({ ...result, state: bot.getState() });
+});
+
+app.post('/api/v1/bot/config', (req, res) => {
+  res.json(bot.updateConfig(req.body || {}));
+});
+
+app.post('/api/v1/bot/reset-halt', (req, res) => {
+  res.json({ ...bot.resetHalt(), state: bot.getState() });
+});
+
+// Run one cycle. dryRun evaluates and logs without submitting orders.
+app.post('/api/v1/bot/run', async (req, res) => {
+  try {
+    const result = await bot.runCycle({
+      fetchTechnical: botFetchTechnical,
+      fetchNews: botFetchNews,
+      dryRun: Boolean(req.body?.dryRun),
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/v1/bot/kill', async (req, res) => {
+  try {
+    res.json({ ...(await bot.killSwitch()), state: bot.getState() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/v1/bot/decisions', (req, res) => {
+  res.json(bot.getDecisions(parseInt(req.query.limit) || 50));
+});
+
+app.get('/api/v1/bot/audit', (req, res) => {
+  res.json(bot.getAudit(parseInt(req.query.limit) || 50));
+});
+
+app.get('/api/v1/bot/orders', async (req, res) => {
+  try {
+    res.json(await broker.getOrders(req.query.status || 'all', parseInt(req.query.limit) || 50));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

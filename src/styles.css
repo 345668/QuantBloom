@@ -2104,3 +2104,79 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
 .attr-fill.pos { background: var(--accent-up); }
 .attr-fill.neg { background: var(--accent-down); }
 .attr-contrib, .attr-ret { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* =========================================================================
+   Trading bot
+   ========================================================================= */
+.bot-panel { max-height: 620px; }
+.panel-badge.bot-paper { color: var(--accent-up); border-color: var(--accent-up); }
+.panel-badge.bot-live { color: var(--accent-down); border-color: var(--accent-down); }
+
+/* --- On/off switch --- */
+.bot-switch-row {
+  display: flex; align-items: center; gap: 10px; padding: 7px 8px; margin-bottom: 8px;
+  border: 1px solid var(--border); background: var(--bg-secondary);
+}
+.bot-switch-row.on { border-color: var(--accent-up); background: rgba(0,204,68,0.06); }
+.bot-switch { display: flex; align-items: center; gap: 7px; }
+.bot-switch:disabled { opacity: 0.4; cursor: not-allowed; }
+.bot-switch-track {
+  width: 38px; height: 20px; border-radius: 10px; position: relative;
+  background: var(--bg-hover); border: 1px solid var(--border-bright); transition: background 0.18s;
+  display: inline-block;
+}
+.bot-switch.on .bot-switch-track { background: var(--accent-up); border-color: var(--accent-up); }
+.bot-switch-knob {
+  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--text-body); transition: transform 0.18s;
+}
+.bot-switch.on .bot-switch-knob { transform: translateX(18px); background: #fff; }
+.bot-switch-label { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; }
+.bot-switch.on .bot-switch-label { color: var(--accent-up); }
+.bot-switch.off .bot-switch-label { color: var(--text-dim); }
+.bot-status-text { font-size: 10px; }
+
+.bot-error {
+  font-size: 10px; color: var(--accent-down); padding: 4px 6px; margin-bottom: 6px;
+  border: 1px solid var(--accent-down); background: rgba(204,34,0,0.08);
+}
+.bot-halt {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  font-size: 9px; color: var(--accent-neutral); padding: 4px 6px; margin-bottom: 6px;
+  border: 1px solid var(--accent-neutral); background: rgba(255,184,0,0.07);
+}
+
+.bot-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; margin-bottom: 6px; }
+.bot-stat {
+  display: flex; flex-direction: column; align-items: center;
+  background: var(--bg-secondary); border: 1px solid var(--border); padding: 4px 2px;
+}
+.bot-stat span:first-child { font-size: 8px; color: var(--text-dim); text-transform: uppercase; }
+.bot-stat span:last-child { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.bot-meta { display: flex; justify-content: space-between; font-size: 9px; color: var(--text-dim); margin-bottom: 6px; }
+
+.bot-actions { display: flex; gap: 4px; margin-bottom: 6px; }
+.bot-btn {
+  flex: 1; padding: 4px 6px; font-size: 9px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.04em; border: 1px solid var(--border); color: var(--text-primary);
+}
+.bot-btn:hover:not(:disabled) { background: var(--bg-hover); }
+.bot-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.bot-kill { color: var(--accent-down); border-color: var(--accent-down); }
+.bot-kill.confirm { background: var(--accent-down); color: #fff; }
+.bot-runinfo { font-size: 9px; color: var(--text-dim); margin-bottom: 4px; }
+
+.bot-decisions { display: flex; flex-direction: column; gap: 4px; }
+.bot-decision { border-bottom: 1px solid var(--border); padding-bottom: 3px; }
+.bot-dec-head { display: flex; align-items: center; gap: 6px; font-size: 10px; }
+.bot-dec-sym { color: var(--text-primary); font-weight: 700; min-width: 42px; }
+.bot-dec-action { font-weight: 700; }
+.bot-dec-conf { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.bot-tag { font-size: 7px; font-weight: 700; padding: 0 3px; border-radius: 2px; letter-spacing: 0.05em; }
+.bot-tag.veto { background: rgba(204,34,0,0.2); color: var(--accent-down); }
+.bot-tag.damp { background: rgba(255,184,0,0.18); color: var(--accent-neutral); }
+.bot-tag.dry { background: var(--bg-hover); color: var(--text-dim); }
+.bot-dec-why { font-size: 9px; color: var(--text-secondary); line-height: 1.35; }
+.bot-dec-llm { font-size: 9px; color: var(--text-dim); line-height: 1.35; margin-top: 1px; }
+.bot-llm-stance { font-weight: 700; margin-right: 4px; }
+.bot-dec-gate { font-size: 9px; color: var(--accent-down); margin-top: 1px; }

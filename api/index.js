@@ -1,7 +1,7 @@
 // server.js
 import express from "express";
 import cors from "cors";
-import fetch from "node-fetch";
+import fetch2 from "node-fetch";
 import dotenv from "dotenv";
 
 // sp500.js
@@ -830,6 +830,714 @@ function efficientFrontier(cov, meanReturns, riskFree = 0, steps = 25) {
   return { points, minVariance: wMin, tangency: wTan };
 }
 
+// bot/risk-gate.js
+var DEFAULT_LIMITS = {
+  maxPositionPercent: 5,
+  // single position as % of equity
+  maxSectorPercent: 25,
+  // sector concentration
+  maxGrossExposurePercent: 100,
+  // no leverage
+  maxDailyLossPercent: 2,
+  // halt trading for the day
+  maxDrawdownPercent: 10,
+  // halt, require manual restart
+  maxOrdersPerDay: 20,
+  maxOrderPercentOfADV: 1,
+  // liquidity: don't be the market
+  minOrderValue: 50
+  // don't pay commission on dust
+};
+var REJECT = {
+  BOT_OFF: "bot_disabled",
+  HALTED: "trading_halted",
+  DAILY_LOSS: "daily_loss_limit",
+  DRAWDOWN: "max_drawdown",
+  ORDER_COUNT: "daily_order_limit",
+  POSITION_SIZE: "position_size_limit",
+  SECTOR: "sector_concentration_limit",
+  GROSS_EXPOSURE: "gross_exposure_limit",
+  LIQUIDITY: "liquidity_limit",
+  DUST: "below_min_order_value",
+  NO_SHARES: "no_position_to_sell",
+  BAD_INPUT: "invalid_order",
+  MARKET_CLOSED: "market_closed"
+};
+function evaluateOrder(order, state2, limits = DEFAULT_LIMITS) {
+  const warnings = [];
+  const reject = (reason, detail) => ({ approved: false, reason, detail, warnings });
+  if (!order || !order.symbol || !order.side) return reject(REJECT.BAD_INPUT, "Missing symbol or side");
+  if (!["buy", "sell"].includes(order.side)) return reject(REJECT.BAD_INPUT, `Unknown side "${order.side}"`);
+  const price = Number(order.price);
+  if (!Number.isFinite(price) || price <= 0) return reject(REJECT.BAD_INPUT, "Invalid price");
+  let qty = Math.floor(Number(order.qty));
+  if (!Number.isFinite(qty) || qty <= 0) return reject(REJECT.BAD_INPUT, "Invalid quantity");
+  const equity = Number(state2.equity);
+  if (!Number.isFinite(equity) || equity <= 0) return reject(REJECT.BAD_INPUT, "Invalid account equity");
+  if (!state2.enabled) return reject(REJECT.BOT_OFF, "Bot is switched off");
+  if (state2.halted) return reject(REJECT.HALTED, state2.haltReason || "Trading halted");
+  if (state2.dailyPnlPercent != null && state2.dailyPnlPercent <= -limits.maxDailyLossPercent) {
+    return reject(
+      REJECT.DAILY_LOSS,
+      `Down ${Math.abs(state2.dailyPnlPercent).toFixed(2)}% today (limit ${limits.maxDailyLossPercent}%)`
+    );
+  }
+  if (state2.drawdownPercent != null && state2.drawdownPercent >= limits.maxDrawdownPercent) {
+    return reject(
+      REJECT.DRAWDOWN,
+      `Drawdown ${state2.drawdownPercent.toFixed(2)}% (limit ${limits.maxDrawdownPercent}%)`
+    );
+  }
+  if ((state2.ordersToday || 0) >= limits.maxOrdersPerDay) {
+    return reject(REJECT.ORDER_COUNT, `${state2.ordersToday} orders today (limit ${limits.maxOrdersPerDay})`);
+  }
+  if (state2.marketOpen === false && !order.allowExtendedHours) {
+    return reject(REJECT.MARKET_CLOSED, "Market is closed");
+  }
+  const positions = state2.positions || {};
+  const held = positions[order.symbol]?.qty || 0;
+  if (order.side === "sell") {
+    if (held <= 0) return reject(REJECT.NO_SHARES, `No position in ${order.symbol}`);
+    if (qty > held) {
+      warnings.push(`Reduced sell from ${qty} to ${held} (position size)`);
+      qty = held;
+    }
+    return { approved: true, adjustedQty: qty, warnings };
+  }
+  let orderValue = qty * price;
+  if (orderValue < limits.minOrderValue) {
+    return reject(REJECT.DUST, `Order value $${orderValue.toFixed(2)} below $${limits.minOrderValue} minimum`);
+  }
+  const currentPosValue = positions[order.symbol]?.marketValue || 0;
+  const maxPosValue = equity * (limits.maxPositionPercent / 100);
+  if (currentPosValue + orderValue > maxPosValue) {
+    const allowedValue = maxPosValue - currentPosValue;
+    const allowedQty = Math.floor(allowedValue / price);
+    if (allowedQty <= 0) {
+      return reject(
+        REJECT.POSITION_SIZE,
+        `${order.symbol} already at ${(currentPosValue / equity * 100).toFixed(1)}% of equity (limit ${limits.maxPositionPercent}%)`
+      );
+    }
+    warnings.push(`Reduced ${qty} to ${allowedQty} (${limits.maxPositionPercent}% position limit)`);
+    qty = allowedQty;
+    orderValue = qty * price;
+  }
+  if (order.sector) {
+    const sectorValue = Object.values(positions).filter((p) => p.sector === order.sector).reduce((s, p) => s + (p.marketValue || 0), 0);
+    const maxSectorValue = equity * (limits.maxSectorPercent / 100);
+    if (sectorValue + orderValue > maxSectorValue) {
+      const allowedQty = Math.floor((maxSectorValue - sectorValue) / price);
+      if (allowedQty <= 0) {
+        return reject(
+          REJECT.SECTOR,
+          `${order.sector} already at ${(sectorValue / equity * 100).toFixed(1)}% of equity (limit ${limits.maxSectorPercent}%)`
+        );
+      }
+      warnings.push(`Reduced ${qty} to ${allowedQty} (${limits.maxSectorPercent}% sector limit)`);
+      qty = allowedQty;
+      orderValue = qty * price;
+    }
+  }
+  const grossValue = Object.values(positions).reduce((s, p) => s + Math.abs(p.marketValue || 0), 0);
+  const maxGross = equity * (limits.maxGrossExposurePercent / 100);
+  if (grossValue + orderValue > maxGross) {
+    const allowedQty = Math.floor((maxGross - grossValue) / price);
+    if (allowedQty <= 0) {
+      return reject(
+        REJECT.GROSS_EXPOSURE,
+        `Gross exposure ${(grossValue / equity * 100).toFixed(1)}% (limit ${limits.maxGrossExposurePercent}%)`
+      );
+    }
+    warnings.push(`Reduced ${qty} to ${allowedQty} (gross exposure limit)`);
+    qty = allowedQty;
+    orderValue = qty * price;
+  }
+  if (order.avgDailyVolume > 0) {
+    const maxQty = Math.floor(order.avgDailyVolume * (limits.maxOrderPercentOfADV / 100));
+    if (qty > maxQty) {
+      if (maxQty <= 0) return reject(REJECT.LIQUIDITY, `${order.symbol} too illiquid`);
+      warnings.push(`Reduced ${qty} to ${maxQty} (${limits.maxOrderPercentOfADV}% of ADV)`);
+      qty = maxQty;
+      orderValue = qty * price;
+    }
+  }
+  if (orderValue < limits.minOrderValue) {
+    return reject(REJECT.DUST, `Order shrank to $${orderValue.toFixed(2)} after limits`);
+  }
+  return { approved: true, adjustedQty: qty, warnings };
+}
+function checkHaltConditions(state2, limits = DEFAULT_LIMITS) {
+  if (state2.dailyPnlPercent != null && state2.dailyPnlPercent <= -limits.maxDailyLossPercent) {
+    return {
+      halt: true,
+      reason: REJECT.DAILY_LOSS,
+      detail: `Daily loss ${state2.dailyPnlPercent.toFixed(2)}% hit the ${limits.maxDailyLossPercent}% limit`,
+      requiresManualRestart: false
+    };
+  }
+  if (state2.drawdownPercent != null && state2.drawdownPercent >= limits.maxDrawdownPercent) {
+    return {
+      halt: true,
+      reason: REJECT.DRAWDOWN,
+      detail: `Drawdown ${state2.drawdownPercent.toFixed(2)}% hit the ${limits.maxDrawdownPercent}% limit`,
+      requiresManualRestart: true
+    };
+  }
+  return { halt: false };
+}
+
+// bot/strategies.js
+var clamp01 = (v) => Math.max(0, Math.min(1, v));
+function rsiStrategy(ta) {
+  const rsi2 = ta?.oscillators?.rsi14;
+  if (rsi2 == null) return null;
+  if (rsi2 < 30) return { action: "BUY", confidence: clamp01((30 - rsi2) / 20), rationale: `RSI ${rsi2} oversold` };
+  if (rsi2 > 70) return { action: "SELL", confidence: clamp01((rsi2 - 70) / 20), rationale: `RSI ${rsi2} overbought` };
+  return { action: "HOLD", confidence: 0, rationale: `RSI ${rsi2} neutral` };
+}
+function macdStrategy(ta) {
+  const m = ta?.oscillators?.macd;
+  const price = ta?.price;
+  if (!m || !price) return null;
+  const strength = clamp01(Math.abs(m.histogram) / (price * 0.01));
+  if (m.histogram > 0) return { action: "BUY", confidence: strength, rationale: `MACD histogram +${m.histogram}` };
+  if (m.histogram < 0) return { action: "SELL", confidence: strength, rationale: `MACD histogram ${m.histogram}` };
+  return { action: "HOLD", confidence: 0, rationale: "MACD flat" };
+}
+function trendStrategy(ta) {
+  const ma = ta?.movingAverages;
+  const price = ta?.price;
+  if (!ma || !price || ma.sma50 == null || ma.sma200 == null) return null;
+  const golden = ma.sma50 > ma.sma200;
+  const above = price > ma.sma50;
+  if (golden && above) return { action: "BUY", confidence: 0.6, rationale: "Golden cross, price above 50-day" };
+  if (!golden && !above) return { action: "SELL", confidence: 0.6, rationale: "Death cross, price below 50-day" };
+  return { action: "HOLD", confidence: 0.2, rationale: golden ? "Uptrend but price below 50-day" : "Downtrend but price above 50-day" };
+}
+function bollingerStrategy(ta) {
+  const bb = ta?.bollinger;
+  const price = ta?.price;
+  if (!bb || !price) return null;
+  if (price < bb.lower) return { action: "BUY", confidence: clamp01((bb.lower - price) / (bb.middle - bb.lower)), rationale: "Price below lower band" };
+  if (price > bb.upper) return { action: "SELL", confidence: clamp01((price - bb.upper) / (bb.upper - bb.middle)), rationale: "Price above upper band" };
+  return { action: "HOLD", confidence: 0, rationale: "Price inside bands" };
+}
+function consensusStrategy(ta) {
+  const s = ta?.summary;
+  if (!s) return null;
+  const total = s.buy + s.sell + s.neutral || 1;
+  const net = (s.buy - s.sell) / total;
+  if (net > 0.2) return { action: "BUY", confidence: clamp01(net), rationale: `${s.buy}/${total} indicators bullish` };
+  if (net < -0.2) return { action: "SELL", confidence: clamp01(-net), rationale: `${s.sell}/${total} indicators bearish` };
+  return { action: "HOLD", confidence: 0, rationale: "Indicators mixed" };
+}
+var STRATEGIES = {
+  rsi: { name: "RSI Reversion", fn: rsiStrategy, weight: 1 },
+  macd: { name: "MACD Momentum", fn: macdStrategy, weight: 1 },
+  trend: { name: "Trend Following", fn: trendStrategy, weight: 1.5 },
+  bollinger: { name: "Bollinger Reversion", fn: bollingerStrategy, weight: 1 },
+  consensus: { name: "Indicator Consensus", fn: consensusStrategy, weight: 2 }
+};
+function ensemble(ta, enabledKeys = Object.keys(STRATEGIES)) {
+  const signals = [];
+  let buyScore = 0, sellScore = 0, totalWeight = 0;
+  for (const key3 of enabledKeys) {
+    const strat = STRATEGIES[key3];
+    if (!strat) continue;
+    const sig = strat.fn(ta);
+    if (!sig) continue;
+    signals.push({ key: key3, name: strat.name, ...sig, weight: strat.weight });
+    totalWeight += strat.weight;
+    if (sig.action === "BUY") buyScore += strat.weight * sig.confidence;
+    if (sig.action === "SELL") sellScore += strat.weight * sig.confidence;
+  }
+  if (!signals.length || !totalWeight) {
+    return { action: "HOLD", confidence: 0, signals: [], rationale: "No signals available" };
+  }
+  const net = (buyScore - sellScore) / totalWeight;
+  const action = net > 0.15 ? "BUY" : net < -0.15 ? "SELL" : "HOLD";
+  const agreeing = signals.filter((s) => s.action === action).length;
+  return {
+    action,
+    confidence: +clamp01(Math.abs(net)).toFixed(3),
+    netScore: +net.toFixed(3),
+    signals,
+    agreement: `${agreeing}/${signals.length}`,
+    rationale: action === "HOLD" ? `Signals too mixed to act (net ${net.toFixed(2)})` : `${agreeing} of ${signals.length} strategies agree on ${action}`
+  };
+}
+function sizePosition(decision, equity, price, maxPositionPercent = 5) {
+  if (decision.action !== "BUY" || !price || price <= 0) return 0;
+  const targetPercent = maxPositionPercent * decision.confidence;
+  return Math.max(Math.floor(equity * (targetPercent / 100) / price), 0);
+}
+
+// bot/mistral.js
+var key = () => process.env.MISTRAL_API_KEY;
+var model = () => process.env.MISTRAL_MODEL || "mistral-small-latest";
+var mistralConfigured = () => Boolean(key());
+var budget = { date: null, calls: 0, tokens: 0, maxCalls: 200 };
+function resetBudgetIfNewDay() {
+  const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  if (budget.date !== today) {
+    budget.date = today;
+    budget.calls = 0;
+    budget.tokens = 0;
+  }
+}
+function getBudget() {
+  resetBudgetIfNewDay();
+  return { ...budget, remaining: Math.max(budget.maxCalls - budget.calls, 0) };
+}
+var SYSTEM = `You are a risk-focused reviewer on a trading desk. A quantitative system has produced a trading decision from technical indicators. Your job is to review it, not to originate trades.
+
+Respond ONLY with JSON:
+{"stance":"AGREE"|"DISAGREE"|"CAUTION","confidence":0.0-1.0,"reasoning":"one or two sentences","keyRisk":"the single biggest risk to this trade"}
+
+Be sceptical. Technical signals fail often. If the evidence is thin, say CAUTION. Do not invent facts you were not given, and never claim knowledge of news you have not been shown.`;
+async function reviewDecision({ symbol, decision, technical, news = [], position = null }) {
+  if (!mistralConfigured()) return null;
+  resetBudgetIfNewDay();
+  if (budget.calls >= budget.maxCalls) {
+    return { stance: "UNAVAILABLE", reasoning: "Daily LLM budget exhausted", budgetExhausted: true };
+  }
+  const facts = [
+    `Symbol: ${symbol}`,
+    `Quant decision: ${decision.action} (confidence ${decision.confidence}, ${decision.agreement} strategies agreeing)`,
+    `Signals: ${decision.signals.map((s) => `${s.name}=${s.action}`).join(", ")}`,
+    technical?.price != null ? `Price: $${technical.price}` : null,
+    technical?.oscillators?.rsi14 != null ? `RSI(14): ${technical.oscillators.rsi14}` : null,
+    technical?.summary ? `Indicator summary: ${technical.summary.overall}` : null,
+    technical?.range52w ? `52w range position: ${technical.range52w.position}%` : null,
+    technical?.movingAverages?.cross ? `MA cross: ${technical.movingAverages.cross}` : null,
+    position ? `Existing position: ${position.qty} shares, P&L ${position.unrealisedPercent?.toFixed(1)}%` : "No existing position",
+    news.length ? `Recent headlines:
+${news.slice(0, 5).map((n) => `- ${n.headline} [${n.sentiment}]`).join("\n")}` : "No recent news supplied"
+  ].filter(Boolean).join("\n");
+  try {
+    const resp = await fetch("https://api.mistral.ai/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key()}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: model(),
+        messages: [
+          { role: "system", content: SYSTEM },
+          { role: "user", content: facts }
+        ],
+        temperature: 0.2,
+        max_tokens: 300,
+        response_format: { type: "json_object" }
+      })
+    });
+    budget.calls++;
+    if (!resp.ok) {
+      const t = await resp.text();
+      return { stance: "UNAVAILABLE", reasoning: `Mistral error ${resp.status}`, detail: t.slice(0, 160) };
+    }
+    const data = await resp.json();
+    budget.tokens += data.usage?.total_tokens || 0;
+    const raw = data.choices?.[0]?.message?.content || "";
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { stance: "UNAVAILABLE", reasoning: "Model returned unparseable output", raw: raw.slice(0, 200) };
+    }
+    const stance = ["AGREE", "DISAGREE", "CAUTION"].includes(parsed.stance) ? parsed.stance : "CAUTION";
+    return {
+      stance,
+      confidence: Math.max(0, Math.min(1, Number(parsed.confidence) || 0)),
+      reasoning: String(parsed.reasoning || "").slice(0, 400),
+      keyRisk: String(parsed.keyRisk || "").slice(0, 300),
+      model: model(),
+      tokens: data.usage?.total_tokens || 0
+    };
+  } catch (e) {
+    return { stance: "UNAVAILABLE", reasoning: `Mistral call failed: ${e.message}` };
+  }
+}
+function applyReview(decision, review) {
+  if (!review || review.stance === "UNAVAILABLE") {
+    return { ...decision, llm: review || null };
+  }
+  if (decision.action === "HOLD") return { ...decision, llm: review };
+  if (review.stance === "DISAGREE" && review.confidence >= 0.6) {
+    return {
+      ...decision,
+      action: "HOLD",
+      confidence: 0,
+      vetoed: true,
+      rationale: `${decision.rationale} \u2014 vetoed by review: ${review.reasoning}`,
+      llm: review
+    };
+  }
+  if (review.stance === "CAUTION" || review.stance === "DISAGREE") {
+    return {
+      ...decision,
+      confidence: +(decision.confidence * 0.5).toFixed(3),
+      damped: true,
+      rationale: `${decision.rationale} \u2014 size reduced after review`,
+      llm: review
+    };
+  }
+  return { ...decision, llm: review };
+}
+
+// bot/alpaca.js
+var endpoint = () => process.env.ALPACA_ENDPOINT || "https://paper-api.alpaca.markets/v2";
+var key2 = () => process.env.ALPACA_API_KEY;
+var secret = () => process.env.ALPACA_SECRET_KEY;
+var isPaperEndpoint = (url = endpoint()) => /paper-api\.alpaca\.markets/.test(url);
+var alpacaConfigured = () => Boolean(key2() && secret());
+async function alpaca(path, options = {}) {
+  if (!alpacaConfigured()) throw new Error("Alpaca credentials not configured");
+  const resp = await fetch(`${endpoint()}${path}`, {
+    ...options,
+    headers: {
+      "APCA-API-KEY-ID": key2(),
+      "APCA-API-SECRET-KEY": secret(),
+      "Content-Type": "application/json",
+      ...options.headers || {}
+    }
+  });
+  const text = await resp.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = { raw: text };
+  }
+  if (!resp.ok) {
+    const msg = body?.message || body?.raw || `HTTP ${resp.status}`;
+    throw new Error(`Alpaca ${path}: ${msg}`);
+  }
+  return body;
+}
+async function getAccount() {
+  const a = await alpaca("/account");
+  return {
+    status: a.status,
+    equity: parseFloat(a.equity),
+    lastEquity: parseFloat(a.last_equity),
+    cash: parseFloat(a.cash),
+    buyingPower: parseFloat(a.buying_power),
+    tradingBlocked: a.trading_blocked,
+    accountBlocked: a.account_blocked,
+    currency: a.currency,
+    // Same-day P&L against the previous close.
+    dailyPnl: parseFloat(a.equity) - parseFloat(a.last_equity),
+    dailyPnlPercent: parseFloat(a.last_equity) ? (parseFloat(a.equity) - parseFloat(a.last_equity)) / parseFloat(a.last_equity) * 100 : 0
+  };
+}
+async function getPositions() {
+  const rows = await alpaca("/positions");
+  return (rows || []).map((p) => ({
+    symbol: p.symbol,
+    qty: parseFloat(p.qty),
+    side: p.side,
+    avgEntryPrice: parseFloat(p.avg_entry_price),
+    marketValue: parseFloat(p.market_value),
+    costBasis: parseFloat(p.cost_basis),
+    unrealisedPnl: parseFloat(p.unrealized_pl),
+    unrealisedPercent: parseFloat(p.unrealized_plpc) * 100,
+    currentPrice: parseFloat(p.current_price)
+  }));
+}
+async function getClock() {
+  const c = await alpaca("/clock");
+  return { isOpen: c.is_open, nextOpen: c.next_open, nextClose: c.next_close, timestamp: c.timestamp };
+}
+async function getOrders(status = "all", limit = 50) {
+  const rows = await alpaca(`/orders?status=${status}&limit=${limit}&direction=desc`);
+  return (rows || []).map((o) => ({
+    id: o.id,
+    clientOrderId: o.client_order_id,
+    symbol: o.symbol,
+    side: o.side,
+    qty: parseFloat(o.qty),
+    filledQty: parseFloat(o.filled_qty || 0),
+    type: o.type,
+    status: o.status,
+    submittedAt: o.submitted_at,
+    filledAt: o.filled_at,
+    filledAvgPrice: o.filled_avg_price ? parseFloat(o.filled_avg_price) : null
+  }));
+}
+async function submitOrder({ symbol, side, qty, type = "market", timeInForce = "day", clientOrderId }) {
+  const body = {
+    symbol,
+    side,
+    qty: String(qty),
+    type,
+    time_in_force: timeInForce,
+    ...clientOrderId ? { client_order_id: clientOrderId } : {}
+  };
+  const o = await alpaca("/orders", { method: "POST", body: JSON.stringify(body) });
+  return {
+    id: o.id,
+    clientOrderId: o.client_order_id,
+    symbol: o.symbol,
+    side: o.side,
+    qty: parseFloat(o.qty),
+    type: o.type,
+    status: o.status,
+    submittedAt: o.submitted_at
+  };
+}
+async function cancelAllOrders() {
+  try {
+    const r = await alpaca("/orders", { method: "DELETE" });
+    return { cancelled: Array.isArray(r) ? r.length : 0 };
+  } catch (e) {
+    return { cancelled: 0, error: e.message };
+  }
+}
+async function closeAllPositions() {
+  try {
+    const r = await alpaca("/positions?cancel_orders=true", { method: "DELETE" });
+    const rows = Array.isArray(r) ? r : [];
+    return {
+      attempted: rows.length,
+      succeeded: rows.filter((x) => x.status >= 200 && x.status < 300).length,
+      failures: rows.filter((x) => !(x.status >= 200 && x.status < 300)).map((x) => x.symbol)
+    };
+  } catch (e) {
+    return { attempted: 0, succeeded: 0, failures: [], error: e.message };
+  }
+}
+
+// bot/engine.js
+var state = {
+  enabled: false,
+  // OFF by default. Always.
+  halted: false,
+  haltReason: null,
+  requiresManualRestart: false,
+  mode: "paper",
+  watchlist: ["AAPL", "MSFT", "NVDA", "SPY", "QQQ"],
+  strategies: Object.keys(STRATEGIES),
+  useLlm: true,
+  limits: { ...DEFAULT_LIMITS },
+  ordersToday: 0,
+  ordersDate: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
+  peakEquity: null,
+  lastRun: null,
+  lastError: null
+};
+var decisions = [];
+var auditLog = [];
+var MAX_LOG = 200;
+function audit(event, detail = {}) {
+  auditLog.unshift({ at: (/* @__PURE__ */ new Date()).toISOString(), event, ...detail });
+  if (auditLog.length > MAX_LOG) auditLog.length = MAX_LOG;
+}
+function rollDayIfNeeded() {
+  const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  if (state.ordersDate !== today) {
+    state.ordersDate = today;
+    state.ordersToday = 0;
+    if (state.halted && !state.requiresManualRestart) {
+      state.halted = false;
+      state.haltReason = null;
+      audit("halt_cleared", { reason: "new trading day" });
+    }
+  }
+}
+function getState() {
+  rollDayIfNeeded();
+  return {
+    ...state,
+    brokerConfigured: alpacaConfigured(),
+    isPaper: isPaperEndpoint(),
+    llmConfigured: mistralConfigured(),
+    llmBudget: getBudget()
+  };
+}
+function setEnabled(enabled, who = "user") {
+  if (enabled && state.halted && state.requiresManualRestart) {
+    return { ok: false, error: `Cannot enable: ${state.haltReason}. Reset the halt first.` };
+  }
+  state.enabled = Boolean(enabled);
+  audit(enabled ? "bot_enabled" : "bot_disabled", { by: who });
+  return { ok: true, enabled: state.enabled };
+}
+function resetHalt(who = "user") {
+  state.halted = false;
+  state.haltReason = null;
+  state.requiresManualRestart = false;
+  audit("halt_reset", { by: who });
+  return { ok: true };
+}
+function updateConfig(patch = {}) {
+  if (Array.isArray(patch.watchlist)) {
+    state.watchlist = patch.watchlist.map((s) => String(s).toUpperCase()).slice(0, 20);
+  }
+  if (Array.isArray(patch.strategies)) {
+    state.strategies = patch.strategies.filter((k) => STRATEGIES[k]);
+  }
+  if (typeof patch.useLlm === "boolean") state.useLlm = patch.useLlm;
+  if (patch.limits && typeof patch.limits === "object") {
+    const ceilings = {
+      maxPositionPercent: 20,
+      maxSectorPercent: 50,
+      maxGrossExposurePercent: 100,
+      maxDailyLossPercent: 10,
+      maxDrawdownPercent: 25,
+      maxOrdersPerDay: 100,
+      maxOrderPercentOfADV: 5,
+      minOrderValue: 1e4
+    };
+    for (const [k, v] of Object.entries(patch.limits)) {
+      if (!(k in state.limits)) continue;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) continue;
+      state.limits[k] = Math.min(n, ceilings[k] ?? n);
+    }
+  }
+  audit("config_updated", { patch: Object.keys(patch) });
+  return getState();
+}
+function getDecisions(limit = 50) {
+  return decisions.slice(0, limit);
+}
+function getAudit(limit = 50) {
+  return auditLog.slice(0, limit);
+}
+async function killSwitch(who = "user") {
+  state.enabled = false;
+  state.halted = true;
+  state.haltReason = "Kill switch activated";
+  state.requiresManualRestart = true;
+  audit("kill_switch", { by: who });
+  const cancelled = await cancelAllOrders();
+  const closed = await closeAllPositions();
+  audit("kill_switch_complete", { cancelled, closed });
+  return { ok: true, cancelled, closed };
+}
+async function runCycle({ fetchTechnical, fetchNews, dryRun = false }) {
+  rollDayIfNeeded();
+  const startedAt = (/* @__PURE__ */ new Date()).toISOString();
+  if (!state.enabled && !dryRun) {
+    return { ok: false, skipped: "Bot is off", startedAt };
+  }
+  if (!alpacaConfigured()) {
+    return { ok: false, skipped: "Broker not configured", startedAt };
+  }
+  let account, positions, clock;
+  try {
+    [account, positions, clock] = await Promise.all([
+      getAccount(),
+      getPositions(),
+      getClock()
+    ]);
+  } catch (e) {
+    state.lastError = e.message;
+    audit("cycle_error", { error: e.message });
+    return { ok: false, error: e.message, startedAt };
+  }
+  state.peakEquity = state.peakEquity == null ? account.equity : Math.max(state.peakEquity, account.equity);
+  const drawdownPercent = state.peakEquity > 0 ? (state.peakEquity - account.equity) / state.peakEquity * 100 : 0;
+  const posBySymbol = Object.fromEntries(positions.map((p) => [p.symbol, p]));
+  const riskState = {
+    enabled: state.enabled,
+    halted: state.halted,
+    equity: account.equity,
+    dailyPnlPercent: account.dailyPnlPercent,
+    drawdownPercent,
+    ordersToday: state.ordersToday,
+    marketOpen: clock.isOpen,
+    positions: posBySymbol
+  };
+  const halt = checkHaltConditions(riskState, state.limits);
+  if (halt.halt && !state.halted) {
+    state.halted = true;
+    state.haltReason = halt.detail;
+    state.requiresManualRestart = halt.requiresManualRestart;
+    audit("auto_halt", { reason: halt.reason, detail: halt.detail });
+  }
+  const results = [];
+  for (const symbol of state.watchlist) {
+    try {
+      const technical = await fetchTechnical(symbol);
+      if (!technical || technical.available === false) {
+        results.push({ symbol, action: "SKIP", reason: "No technical data" });
+        continue;
+      }
+      let decision = ensemble(technical, state.strategies);
+      if (state.useLlm && mistralConfigured() && decision.action !== "HOLD") {
+        const news = fetchNews ? await fetchNews(symbol).catch(() => []) : [];
+        const review = await reviewDecision({
+          symbol,
+          decision,
+          technical,
+          news,
+          position: posBySymbol[symbol] || null
+        });
+        decision = applyReview(decision, review);
+      }
+      const price = technical.price;
+      const held = posBySymbol[symbol];
+      let order = null, gate = null, submitted = null;
+      if (decision.action === "BUY") {
+        const qty = sizePosition(decision, account.equity, price, state.limits.maxPositionPercent);
+        if (qty > 0) order = { symbol, side: "buy", qty, price, avgDailyVolume: technical.volume?.avg20 };
+      } else if (decision.action === "SELL" && held?.qty > 0) {
+        order = { symbol, side: "sell", qty: held.qty, price };
+      }
+      if (order) {
+        gate = evaluateOrder(order, riskState, state.limits);
+        if (gate.approved && !dryRun) {
+          submitted = await submitOrder({
+            symbol,
+            side: order.side,
+            qty: gate.adjustedQty,
+            clientOrderId: `qb-${symbol}-${Date.now()}`
+          });
+          state.ordersToday++;
+          riskState.ordersToday = state.ordersToday;
+          audit("order_submitted", { symbol, side: order.side, qty: gate.adjustedQty, id: submitted.id });
+        }
+      }
+      const record = {
+        at: (/* @__PURE__ */ new Date()).toISOString(),
+        symbol,
+        action: decision.action,
+        confidence: decision.confidence,
+        agreement: decision.agreement,
+        rationale: decision.rationale,
+        signals: decision.signals,
+        llm: decision.llm || null,
+        vetoed: decision.vetoed || false,
+        damped: decision.damped || false,
+        order,
+        gate,
+        submitted,
+        dryRun
+      };
+      results.push(record);
+      decisions.unshift(record);
+      if (decisions.length > MAX_LOG) decisions.length = MAX_LOG;
+    } catch (e) {
+      results.push({ symbol, action: "ERROR", error: e.message });
+      audit("symbol_error", { symbol, error: e.message });
+    }
+  }
+  state.lastRun = startedAt;
+  state.lastError = null;
+  return {
+    ok: true,
+    startedAt,
+    finishedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    dryRun,
+    account: { equity: account.equity, cash: account.cash, dailyPnlPercent: +account.dailyPnlPercent.toFixed(3), drawdownPercent: +drawdownPercent.toFixed(3) },
+    marketOpen: clock.isOpen,
+    halted: state.halted,
+    haltReason: state.haltReason,
+    results
+  };
+}
+
 // server.js
 dotenv.config();
 var app = express();
@@ -837,25 +1545,25 @@ var port = process.env.API_PORT || 3001;
 app.use(cors());
 app.use(express.json());
 var cache = /* @__PURE__ */ new Map();
-function cacheGet(key) {
-  const entry = cache.get(key);
+function cacheGet(key3) {
+  const entry = cache.get(key3);
   if (!entry) return null;
   if (Date.now() > entry.expiry) {
-    cache.delete(key);
+    cache.delete(key3);
     return null;
   }
   return entry.value;
 }
-function cacheSet(key, value, ttlMs) {
-  cache.set(key, { value, expiry: Date.now() + ttlMs });
+function cacheSet(key3, value, ttlMs) {
+  cache.set(key3, { value, expiry: Date.now() + ttlMs });
 }
 function envAny(...names) {
   for (const n of names) {
     if (process.env[n]) return process.env[n];
   }
   const lowered = names.map((n) => n.toLowerCase());
-  for (const [key, value] of Object.entries(process.env)) {
-    if (value && lowered.includes(key.toLowerCase())) return value;
+  for (const [key3, value] of Object.entries(process.env)) {
+    if (value && lowered.includes(key3.toLowerCase())) return value;
   }
   return void 0;
 }
@@ -894,13 +1602,13 @@ var yahooAuth = null;
 async function getYahooAuth() {
   if (yahooAuth && Date.now() < yahooAuth.expiry) return yahooAuth;
   try {
-    const cookieResp = await fetch("https://fc.yahoo.com/", {
+    const cookieResp = await fetch2("https://fc.yahoo.com/", {
       headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36" }
     });
     const setCookie = cookieResp.headers.get("set-cookie");
     const cookie = setCookie ? setCookie.split(";")[0] : "";
     if (!cookie) return null;
-    const crumbResp = await fetch("https://query1.finance.yahoo.com/v1/test/getcrumb", {
+    const crumbResp = await fetch2("https://query1.finance.yahoo.com/v1/test/getcrumb", {
       headers: { "User-Agent": "Mozilla/5.0", "Cookie": cookie }
     });
     const crumb = await crumbResp.text();
@@ -917,7 +1625,7 @@ async function yahooQuoteSummary(symbol, modules) {
   for (const host of ["query2.finance.yahoo.com", "query1.finance.yahoo.com"]) {
     try {
       const url = `https://${host}/v10/finance/quoteSummary/${symbol}?modules=${modules}&crumb=${encodeURIComponent(auth.crumb)}`;
-      const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0", "Cookie": auth.cookie } });
+      const resp = await fetch2(url, { headers: { "User-Agent": "Mozilla/5.0", "Cookie": auth.cookie } });
       if (!resp.ok) continue;
       const data = await resp.json();
       const result = data.quoteSummary?.result?.[0];
@@ -928,7 +1636,7 @@ async function yahooQuoteSummary(symbol, modules) {
   return null;
 }
 async function yahooQuote(symbol) {
-  const resp = await fetch(
+  const resp = await fetch2(
     `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1d&range=2d`,
     { headers: { "User-Agent": "Mozilla/5.0" } }
   );
@@ -953,7 +1661,7 @@ async function yahooQuote(symbol) {
   };
 }
 async function yahooCandles(symbol, interval, range) {
-  const resp = await fetch(
+  const resp = await fetch2(
     `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=${interval}&range=${range}`,
     { headers: { "User-Agent": "Mozilla/5.0" } }
   );
@@ -1083,7 +1791,7 @@ function pivotPoints(high, low, close) {
 }
 async function finnhubFetch(path) {
   if (!FINNHUB_KEY) return null;
-  const resp = await fetch(`https://finnhub.io/api/v1${path}&token=${FINNHUB_KEY}`);
+  const resp = await fetch2(`https://finnhub.io/api/v1${path}&token=${FINNHUB_KEY}`);
   if (!resp.ok) return null;
   return resp.json();
 }
@@ -1091,7 +1799,7 @@ async function fredFetch(seriesId, options = {}) {
   if (!FRED_KEY) return null;
   const limit = options.limit || 30;
   const sort = options.sort || "desc";
-  const resp = await fetch(
+  const resp = await fetch2(
     `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&api_key=${FRED_KEY}&file_type=json&sort_order=${sort}&limit=${limit}`
   );
   if (!resp.ok) return null;
@@ -1100,7 +1808,7 @@ async function fredFetch(seriesId, options = {}) {
 }
 async function fredSeriesInfo(seriesId) {
   if (!FRED_KEY) return null;
-  const resp = await fetch(
+  const resp = await fetch2(
     `https://api.stlouisfed.org/fred/series?series_id=${seriesId}&api_key=${FRED_KEY}&file_type=json`
   );
   if (!resp.ok) return null;
@@ -1138,7 +1846,7 @@ async function marketauxFetch(params = {}) {
   });
   delete qs.api_token;
   const url = `https://api.marketaux.com/v1/news/all?api_token=${MARKETAUX_KEY}&language=en&limit=${params.limit || 20}${params.symbols ? `&symbols=${params.symbols}` : ""}${params.filter_entities ? `&filter_entities=true` : ""}`;
-  const resp = await fetch(url);
+  const resp = await fetch2(url);
   if (!resp.ok) return null;
   const data = await resp.json();
   return data.data || [];
@@ -1157,7 +1865,7 @@ async function yahooQuoteBatch(symbols) {
         const url = `https://${host}/v7/finance/quote?symbols=${chunk.join(",")}${crumbParam}`;
         const headers = { "User-Agent": "Mozilla/5.0", "Accept": "application/json" };
         if (auth?.cookie) headers["Cookie"] = auth.cookie;
-        const resp = await fetch(url, { headers });
+        const resp = await fetch2(url, { headers });
         if (!resp.ok) continue;
         const data = await resp.json();
         const rows = data.quoteResponse?.result;
@@ -1187,7 +1895,7 @@ async function yahooQuoteBatch(symbols) {
 }
 async function alphaVantageQuote(symbol) {
   if (!ALPHA_VANTAGE_KEY) return null;
-  const resp = await fetch(
+  const resp = await fetch2(
     `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${ALPHA_VANTAGE_KEY}`
   );
   if (!resp.ok) return null;
@@ -1357,7 +2065,7 @@ app.get("/api/v1/news", async (req, res) => {
     }
     if (NEWSAPI_KEY && articles.length < limit) {
       try {
-        const resp = await fetch(
+        const resp = await fetch2(
           `https://newsapi.org/v2/top-headlines?category=business&language=en&pageSize=${limit}&apiKey=${NEWSAPI_KEY}`
         );
         if (resp.ok) {
@@ -1383,9 +2091,9 @@ app.get("/api/v1/news", async (req, res) => {
     }
     const seen = /* @__PURE__ */ new Set();
     const unique = articles.filter((a) => {
-      const key = a.headline?.toLowerCase().slice(0, 60);
-      if (!key || seen.has(key)) return false;
-      seen.add(key);
+      const key3 = a.headline?.toLowerCase().slice(0, 60);
+      if (!key3 || seen.has(key3)) return false;
+      seen.add(key3);
       return true;
     });
     unique.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
@@ -1941,11 +2649,11 @@ app.get("/api/v1/financials", async (req, res) => {
       endDate: r.endDate ? String(r.endDate).slice(0, 10) : null,
       label: freq === "annual" ? `FY${r.year}` : `Q${r.quarter} ${r.year}`
     }));
-    const buildStatement = (key) => {
+    const buildStatement = (key3) => {
       const order = [];
       const seen = /* @__PURE__ */ new Set();
       for (const r of reports) {
-        for (const item of r.report?.[key] || []) {
+        for (const item of r.report?.[key3] || []) {
           if (item.concept && !seen.has(item.concept)) {
             seen.add(item.concept);
             order.push({ concept: item.concept, label: item.label || item.concept, unit: item.unit });
@@ -1954,7 +2662,7 @@ app.get("/api/v1/financials", async (req, res) => {
       }
       return order.map(({ concept, label, unit }) => {
         const cells = reports.map((r) => {
-          const hit = (r.report?.[key] || []).find((i) => i.concept === concept);
+          const hit = (r.report?.[key3] || []).find((i) => i.concept === concept);
           return hit ? { value: hit.value ?? null, label: hit.label || null } : { value: null, label: null };
         });
         const norm = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -2891,8 +3599,8 @@ app.get("/api/v1/comps", async (req, res) => {
       };
     }).filter((r) => r.price != null || r.marketCap != null);
     const peers = rows.filter((r) => !r.isSubject);
-    const median = (key) => {
-      const vals = peers.map((r) => r[key]).filter((v) => v != null && isFinite(v)).sort((a, b) => a - b);
+    const median = (key3) => {
+      const vals = peers.map((r) => r[key3]).filter((v) => v != null && isFinite(v)).sort((a, b) => a - b);
       if (!vals.length) return null;
       const mid = Math.floor(vals.length / 2);
       return +(vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2).toFixed(2);
@@ -3247,7 +3955,7 @@ app.get("/api/v1/options", async (req, res) => {
         const url = `https://${host}/v7/finance/options/${symbol}${date ? `?date=${date}` : ""}${crumbParam}`;
         const headers = { "User-Agent": "Mozilla/5.0", "Accept": "application/json" };
         if (auth?.cookie) headers["Cookie"] = auth.cookie;
-        const resp = await fetch(url, { headers });
+        const resp = await fetch2(url, { headers });
         if (!resp.ok) continue;
         const data = await resp.json();
         chain = data.optionChain?.result?.[0];
@@ -3330,6 +4038,74 @@ app.get("/api/v1/options", async (req, res) => {
     res.json(result);
   } catch (err) {
     res.json({ symbol: (req.query.symbol || "AAPL").toUpperCase(), expirationDates: [], currentPrice: null, calls: [], puts: [] });
+  }
+});
+var botFetchTechnical = async (symbol) => {
+  const resp = await fetch2(`http://127.0.0.1:${port}/api/v1/technical?symbol=${symbol}`);
+  return resp.ok ? resp.json() : null;
+};
+var botFetchNews = async (symbol) => {
+  const resp = await fetch2(`http://127.0.0.1:${port}/api/v1/news?symbol=${symbol}&limit=5`);
+  return resp.ok ? resp.json() : [];
+};
+app.get("/api/v1/bot/status", async (req, res) => {
+  try {
+    const state2 = getState();
+    let account = null, positions = [], clock = null;
+    if (state2.brokerConfigured) {
+      [account, positions, clock] = await Promise.all([
+        getAccount().catch(() => null),
+        getPositions().catch(() => []),
+        getClock().catch(() => null)
+      ]);
+    }
+    res.json({ ...state2, account, positions, marketOpen: clock?.isOpen ?? null, nextOpen: clock?.nextOpen ?? null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.post("/api/v1/bot/toggle", (req, res) => {
+  const enabled = req.body?.enabled;
+  if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled must be boolean" });
+  const result = setEnabled(enabled);
+  res.status(result.ok ? 200 : 409).json({ ...result, state: getState() });
+});
+app.post("/api/v1/bot/config", (req, res) => {
+  res.json(updateConfig(req.body || {}));
+});
+app.post("/api/v1/bot/reset-halt", (req, res) => {
+  res.json({ ...resetHalt(), state: getState() });
+});
+app.post("/api/v1/bot/run", async (req, res) => {
+  try {
+    const result = await runCycle({
+      fetchTechnical: botFetchTechnical,
+      fetchNews: botFetchNews,
+      dryRun: Boolean(req.body?.dryRun)
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.post("/api/v1/bot/kill", async (req, res) => {
+  try {
+    res.json({ ...await killSwitch(), state: getState() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.get("/api/v1/bot/decisions", (req, res) => {
+  res.json(getDecisions(parseInt(req.query.limit) || 50));
+});
+app.get("/api/v1/bot/audit", (req, res) => {
+  res.json(getAudit(parseInt(req.query.limit) || 50));
+});
+app.get("/api/v1/bot/orders", async (req, res) => {
+  try {
+    res.json(await getOrders(req.query.status || "all", parseInt(req.query.limit) || 50));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 var server_default = app;
