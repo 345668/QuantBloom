@@ -33,12 +33,34 @@ function cacheSet(key, value, ttlMs) {
 
 // ---------------------------------------------------------------------------
 // API Keys
+//
+// Env var names vary between local .env files and hosting dashboards (casing,
+// suffixes). Resolve each key from a list of accepted names, falling back to a
+// case-insensitive lookup so e.g. `Finnhub` and `FINNHUB_API_KEY` both work.
 // ---------------------------------------------------------------------------
-const FINNHUB_KEY = process.env.FINNHUB_API_KEY;
-const NEWSAPI_KEY = process.env.NEWSAPI_KEY;
-const FRED_KEY = process.env.FRED_API_KEY;
-const ALPHA_VANTAGE_KEY = process.env.ALPHA_VANTAGE_API_KEY;
-const MARKETAUX_KEY = process.env.MARKETAUX_API_KEY;
+function envAny(...names) {
+  for (const n of names) {
+    if (process.env[n]) return process.env[n];
+  }
+  const lowered = names.map(n => n.toLowerCase());
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value && lowered.includes(key.toLowerCase())) return value;
+  }
+  return undefined;
+}
+
+const FINNHUB_KEY = envAny('FINNHUB_API_KEY', 'FINNHUB_KEY', 'FINNHUB');
+const NEWSAPI_KEY = envAny('NEWSAPI_KEY', 'NEWS_API_KEY', 'NEWSAPI');
+const FRED_KEY = envAny('FRED_API_KEY', 'FRED_KEY', 'FRED');
+const ALPHA_VANTAGE_KEY = envAny('ALPHA_VANTAGE_API_KEY', 'ALPHAVANTAGE_API_KEY', 'ALPHA_VANTAGE_KEY');
+const MARKETAUX_KEY = envAny('MARKETAUX_API_KEY', 'MARKETAUX_KEY', 'MARKETAUX');
+
+// Surface which providers resolved a key — makes deploys debuggable without
+// ever logging the secret itself.
+console.log('[keys]', {
+  finnhub: !!FINNHUB_KEY, newsapi: !!NEWSAPI_KEY, fred: !!FRED_KEY,
+  alphaVantage: !!ALPHA_VANTAGE_KEY, marketaux: !!MARKETAUX_KEY,
+});
 
 // ---------------------------------------------------------------------------
 // Heatmap Constituents — top names per GICS sector, sampled from the S&P 500.

@@ -474,11 +474,28 @@ function cacheGet(key) {
 function cacheSet(key, value, ttlMs) {
   cache.set(key, { value, expiry: Date.now() + ttlMs });
 }
-var FINNHUB_KEY = process.env.FINNHUB_API_KEY;
-var NEWSAPI_KEY = process.env.NEWSAPI_KEY;
-var FRED_KEY = process.env.FRED_API_KEY;
-var ALPHA_VANTAGE_KEY = process.env.ALPHA_VANTAGE_API_KEY;
-var MARKETAUX_KEY = process.env.MARKETAUX_API_KEY;
+function envAny(...names) {
+  for (const n of names) {
+    if (process.env[n]) return process.env[n];
+  }
+  const lowered = names.map((n) => n.toLowerCase());
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value && lowered.includes(key.toLowerCase())) return value;
+  }
+  return void 0;
+}
+var FINNHUB_KEY = envAny("FINNHUB_API_KEY", "FINNHUB_KEY", "FINNHUB");
+var NEWSAPI_KEY = envAny("NEWSAPI_KEY", "NEWS_API_KEY", "NEWSAPI");
+var FRED_KEY = envAny("FRED_API_KEY", "FRED_KEY", "FRED");
+var ALPHA_VANTAGE_KEY = envAny("ALPHA_VANTAGE_API_KEY", "ALPHAVANTAGE_API_KEY", "ALPHA_VANTAGE_KEY");
+var MARKETAUX_KEY = envAny("MARKETAUX_API_KEY", "MARKETAUX_KEY", "MARKETAUX");
+console.log("[keys]", {
+  finnhub: !!FINNHUB_KEY,
+  newsapi: !!NEWSAPI_KEY,
+  fred: !!FRED_KEY,
+  alphaVantage: !!ALPHA_VANTAGE_KEY,
+  marketaux: !!MARKETAUX_KEY
+});
 var HEATMAP_CONSTITUENTS = Object.fromEntries(
   Object.entries(SP500_BY_SECTOR).map(([sector, symbols]) => [sector, symbols.slice(0, 8)])
 );
