@@ -24,6 +24,9 @@ import OptionsPanel from './components/OptionsPanel.jsx';
 import PortfolioPanel from './components/PortfolioPanel.jsx';
 import FinancialsPanel from './components/FinancialsPanel.jsx';
 import CorrelationPanel from './components/CorrelationPanel.jsx';
+import YieldCurvePanel from './components/YieldCurvePanel.jsx';
+import CompsPanel from './components/CompsPanel.jsx';
+import BreadthPanel from './components/BreadthPanel.jsx';
 
 function Dashboard() {
   const { state, dispatch } = useDashboard();
@@ -109,7 +112,14 @@ function Dashboard() {
         <AlertsPanel />
       </div>
 
-      {/* Row 6: Financials + Options */}
+      {/* Row 6: Breadth + Yield Curve + Comps */}
+      <div className="dashboard-row row-3col">
+        <BreadthPanel />
+        <YieldCurvePanel />
+        <CompsPanel />
+      </div>
+
+      {/* Row 7: Financials + Options */}
       <div className="dashboard-row row-2col">
         <FinancialsPanel />
         <OptionsPanel />

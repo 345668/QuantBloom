@@ -1464,6 +1464,223 @@ app.get('/api/v1/analytics/correlation', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/v1/yieldcurve — US Treasury curve now vs 1M / 1Y ago, with
+// inversion detection. All tenors come from FRED.
+// ---------------------------------------------------------------------------
+const CURVE_TENORS = [
+  { id: 'DGS1MO', label: '1M', years: 1 / 12 },
+  { id: 'DGS3MO', label: '3M', years: 0.25 },
+  { id: 'DGS6MO', label: '6M', years: 0.5 },
+  { id: 'DGS1', label: '1Y', years: 1 },
+  { id: 'DGS2', label: '2Y', years: 2 },
+  { id: 'DGS3', label: '3Y', years: 3 },
+  { id: 'DGS5', label: '5Y', years: 5 },
+  { id: 'DGS7', label: '7Y', years: 7 },
+  { id: 'DGS10', label: '10Y', years: 10 },
+  { id: 'DGS20', label: '20Y', years: 20 },
+  { id: 'DGS30', label: '30Y', years: 30 },
+];
+
+app.get('/api/v1/yieldcurve', async (req, res) => {
+  try {
+    const cached = cacheGet('yieldcurve');
+    if (cached) return res.json(cached);
+
+    // ~1y of daily observations lets us read today, ~1M ago and ~1Y ago
+    // from a single request per tenor.
+    const series = await Promise.all(
+      CURVE_TENORS.map(t => fredFetch(t.id, { limit: 400, sort: 'desc' }).catch(() => null))
+    );
+
+    const pickBack = (obs, daysAgo) => {
+      if (!obs) return null;
+      const target = Date.now() - daysAgo * 86400000;
+      // Observations are newest-first; find the first at or before the target.
+      const hit = obs.find(o => o.value !== '.' && new Date(o.date).getTime() <= target);
+      return hit ? parseFloat(hit.value) : null;
+    };
+
+    const points = CURVE_TENORS.map((t, i) => {
+      const obs = (series[i] || []).filter(o => o.value !== '.');
+      const latest = obs[0] ? parseFloat(obs[0].value) : null;
+      return {
+        tenor: t.label, years: t.years, seriesId: t.id,
+        current: latest,
+        monthAgo: pickBack(obs, 30),
+        yearAgo: pickBack(obs, 365),
+        date: obs[0]?.date || null,
+      };
+    });
+
+    const get = (label) => points.find(p => p.tenor === label)?.current ?? null;
+    const spread = (a, b) => (a != null && b != null) ? +(a - b).toFixed(2) : null;
+
+    const s10y2y = spread(get('10Y'), get('2Y'));
+    const s10y3m = spread(get('10Y'), get('3M'));
+    const s30y10y = spread(get('30Y'), get('10Y'));
+
+    // An inverted curve (long yields below short) has preceded most US
+    // recessions; 10y-2y and 10y-3m are the conventional reads.
+    const inverted = [s10y2y, s10y3m].filter(v => v != null && v < 0).length > 0;
+    const shape = s10y2y == null ? 'unknown'
+      : s10y2y < 0 ? 'Inverted'
+      : s10y2y < 0.5 ? 'Flat'
+      : 'Normal';
+
+    const result = {
+      points: points.filter(p => p.current != null),
+      spreads: { '10Y-2Y': s10y2y, '10Y-3M': s10y3m, '30Y-10Y': s30y10y },
+      inverted, shape,
+      asOf: points.find(p => p.date)?.date || null,
+    };
+
+    cacheSet(result.points.length ? 'yieldcurve' : 'skip', result, 3600000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/comps?symbol=AAPL — Peer comparable-company analysis
+// ---------------------------------------------------------------------------
+app.get('/api/v1/comps', async (req, res) => {
+  try {
+    const symbol = (req.query.symbol || 'AAPL').toUpperCase();
+    const cacheKey = `comps:${symbol}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const peerList = await finnhubFetch(`/stock/peers?symbol=${symbol}`);
+    if (!Array.isArray(peerList) || !peerList.length) {
+      return res.json({ symbol, available: false, message: 'No peers found' });
+    }
+
+    // Keep the subject first, cap the set so we stay inside rate limits.
+    const symbols = [symbol, ...peerList.filter(p => p !== symbol)].slice(0, 8);
+
+    const [metricResults, quotes] = await Promise.all([
+      Promise.allSettled(symbols.map(s => finnhubFetch(`/stock/metric?symbol=${s}&metric=all`))),
+      yahooQuoteBatch(symbols),
+    ]);
+    const quoteBy = new Map(quotes.map(q => [q.symbol, q]));
+
+    const rows = symbols.map((s, i) => {
+      const m = metricResults[i].status === 'fulfilled' ? (metricResults[i].value?.metric || {}) : {};
+      const q = quoteBy.get(s);
+      return {
+        symbol: s,
+        isSubject: s === symbol,
+        price: q?.price ?? null,
+        changePercent: q?.changePercent ?? null,
+        marketCap: m['marketCapitalization'] ?? null,
+        peRatio: m['peBasicExclExtraTTM'] ?? m['peTTM'] ?? null,
+        pbRatio: m['pbAnnual'] ?? null,
+        psRatio: m['psAnnual'] ?? null,
+        evToEbitda: m['enterpriseValueOverEBITDATTM'] ?? null,
+        grossMargin: m['grossMarginTTM'] ?? null,
+        netMargin: m['netProfitMarginTTM'] ?? null,
+        roe: m['roeTTM'] ?? null,
+        revenueGrowth: m['revenueGrowthTTMYoy'] ?? null,
+        debtToEquity: m['totalDebt/totalEquityAnnual'] ?? null,
+      };
+    }).filter(r => r.price != null || r.marketCap != null);
+
+    // Peer median (excluding the subject) is the benchmark to price against.
+    const peers = rows.filter(r => !r.isSubject);
+    const median = (key) => {
+      const vals = peers.map(r => r[key]).filter(v => v != null && isFinite(v)).sort((a, b) => a - b);
+      if (!vals.length) return null;
+      const mid = Math.floor(vals.length / 2);
+      return +(vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2).toFixed(2);
+    };
+
+    const METRICS = ['peRatio', 'pbRatio', 'psRatio', 'evToEbitda', 'grossMargin', 'netMargin', 'roe', 'revenueGrowth', 'debtToEquity'];
+    const medians = Object.fromEntries(METRICS.map(k => [k, median(k)]));
+
+    // Premium/discount of the subject vs the peer median, per metric.
+    const subject = rows.find(r => r.isSubject);
+    const premium = {};
+    for (const k of METRICS) {
+      const sv = subject?.[k], mv = medians[k];
+      premium[k] = (sv != null && mv != null && mv !== 0)
+        ? +(((sv - mv) / Math.abs(mv)) * 100).toFixed(1) : null;
+    }
+
+    const result = { symbol, available: true, rows, medians, premium, peerCount: peers.length };
+    cacheSet(cacheKey, result, 14400000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/breadth — Market internals across the S&P 500 universe.
+// Only viable because quotes are batched; this is ~450 symbols per refresh.
+// ---------------------------------------------------------------------------
+app.get('/api/v1/breadth', async (req, res) => {
+  try {
+    const cached = cacheGet('breadth');
+    if (cached) return res.json(cached);
+
+    const quotes = await yahooQuoteBatch(SP500_ALL);
+    const valid = quotes.filter(q => q.price != null && q.changePercent != null);
+    if (valid.length < 20) {
+      return res.json({ available: false, message: 'Insufficient quote coverage' });
+    }
+
+    const advancing = valid.filter(q => q.changePercent > 0).length;
+    const declining = valid.filter(q => q.changePercent < 0).length;
+    const unchanged = valid.length - advancing - declining;
+
+    // Per-sector advance/decline shows whether strength is broad or narrow.
+    const bySector = {};
+    for (const q of valid) {
+      const sec = SYMBOL_SECTOR[q.symbol];
+      if (!sec) continue;
+      if (!bySector[sec]) bySector[sec] = { advancing: 0, declining: 0, total: 0, sumChange: 0 };
+      const s = bySector[sec];
+      s.total++;
+      s.sumChange += q.changePercent;
+      if (q.changePercent > 0) s.advancing++; else if (q.changePercent < 0) s.declining++;
+    }
+    const sectors = Object.entries(bySector).map(([name, s]) => ({
+      name, advancing: s.advancing, declining: s.declining, total: s.total,
+      breadthPct: +((s.advancing / s.total) * 100).toFixed(1),
+      avgChange: +(s.sumChange / s.total).toFixed(2),
+    })).sort((a, b) => b.breadthPct - a.breadthPct);
+
+    const sorted = [...valid].sort((a, b) => b.changePercent - a.changePercent);
+    const adRatio = declining ? +(advancing / declining).toFixed(2) : null;
+    const breadthPct = +((advancing / valid.length) * 100).toFixed(1);
+
+    const result = {
+      available: true,
+      universe: valid.length,
+      advancing, declining, unchanged,
+      advanceDeclineRatio: adRatio,
+      breadthPct,
+      // Broad participation vs a handful of names carrying the index.
+      signal: breadthPct >= 65 ? 'Broad advance'
+        : breadthPct >= 55 ? 'Positive'
+        : breadthPct >= 45 ? 'Mixed'
+        : breadthPct >= 35 ? 'Negative'
+        : 'Broad decline',
+      avgChange: +(valid.reduce((s, q) => s + q.changePercent, 0) / valid.length).toFixed(2),
+      topGainers: sorted.slice(0, 5).map(q => ({ symbol: q.symbol, changePercent: +q.changePercent.toFixed(2), price: q.price })),
+      topLosers: sorted.slice(-5).reverse().map(q => ({ symbol: q.symbol, changePercent: +q.changePercent.toFixed(2), price: q.price })),
+      sectors,
+    };
+
+    cacheSet('breadth', result, 120000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/v1/technical?symbol=AAPL&resolution=D — Technical analysis
 // ---------------------------------------------------------------------------
 app.get('/api/v1/technical', async (req, res) => {

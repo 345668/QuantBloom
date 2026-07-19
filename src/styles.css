@@ -1720,3 +1720,96 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
 @media (max-width: 1200px) { .row-2col { grid-template-columns: 1fr; } }
 .fin-mismatch { color: var(--accent-neutral); }
 .fin-note { font-size: 9px; color: var(--text-dim); margin-top: 6px; line-height: 1.4; }
+
+/* =========================================================================
+   v3 — Yield curve, peer comps, market breadth, chart drawings
+   ========================================================================= */
+
+/* --- Yield Curve --- */
+.yc-panel { max-height: 400px; }
+.yc-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; margin-bottom: 6px; }
+.yc-stat { background: var(--bg-secondary); border: 1px solid var(--border); padding: 4px 5px; display: flex; flex-direction: column; }
+.yc-stat-label { font-size: 8px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
+.yc-stat-value { font-size: 12px; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.yc-warning {
+  font-size: 10px; color: var(--accent-down); padding: 3px 6px; margin-bottom: 6px;
+  border: 1px solid var(--accent-down); border-radius: 2px; background: rgba(204,34,0,0.08);
+}
+.yc-chart { width: 100%; height: auto; display: block; }
+.yc-axis { fill: var(--text-dim); font-size: 6px; font-family: inherit; }
+.yc-legend { display: flex; gap: 8px; align-items: center; margin-top: 4px; flex-wrap: wrap; }
+.yc-legend-item { display: flex; align-items: center; gap: 3px; font-size: 9px; color: var(--text-secondary); }
+.yc-legend-item.off { opacity: 0.35; }
+.yc-swatch { width: 8px; height: 2px; display: inline-block; }
+.yc-asof { margin-left: auto; font-size: 9px; color: var(--text-dim); }
+
+/* --- Peer Comps --- */
+.comps-panel { max-height: 520px; }
+.comps-median {
+  display: flex; justify-content: space-between; font-size: 10px;
+  color: var(--text-secondary); padding: 4px 0; margin: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.comps-bars { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+.comps-bar-row { display: grid; grid-template-columns: 42px 1fr 46px; gap: 5px; align-items: center; cursor: pointer; }
+.comps-bar-row:hover { background: var(--bg-hover); }
+.comps-bar-row.subject .comps-sym { color: var(--accent-neutral); }
+.comps-sym { font-size: 10px; font-weight: 700; color: var(--text-primary); }
+.comps-track { height: 9px; background: var(--bg-secondary); border-radius: 1px; overflow: hidden; }
+.comps-fill { height: 100%; background: var(--accent-blue); }
+.comps-fill.negative { background: var(--accent-down); }
+.comps-val { font-size: 10px; text-align: right; font-variant-numeric: tabular-nums; }
+.comps-table-wrap { overflow-x: auto; }
+.comps-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+.comps-table th { text-align: right; padding: 3px 4px; color: var(--text-dim); font-size: 9px; text-transform: uppercase; border-bottom: 1px solid var(--border-bright); }
+.comps-table th:first-child { text-align: left; }
+.comps-table td { text-align: right; padding: 2px 4px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.comps-table td:first-child { text-align: left; }
+.comps-table tbody tr { cursor: pointer; }
+.comps-table tbody tr:hover { background: var(--bg-hover); }
+.comps-table tbody tr.subject { background: rgba(255,184,0,0.06); }
+
+/* --- Market Breadth --- */
+.breadth-panel { max-height: 560px; }
+.bd-signal { display: flex; flex-direction: column; margin-bottom: 8px; }
+.bd-signal-value { font-size: 16px; font-weight: 700; }
+.bd-signal-sub { font-size: 10px; color: var(--text-dim); }
+.bd-adline { margin-bottom: 8px; }
+.bd-adbar { display: flex; height: 10px; border-radius: 2px; overflow: hidden; margin-bottom: 3px; }
+.bd-adv { background: var(--accent-up); }
+.bd-unch { background: var(--text-dim); }
+.bd-decl { background: var(--accent-down); }
+.bd-adcounts { display: flex; justify-content: space-between; font-size: 10px; font-weight: 600; }
+.text-dim { color: var(--text-dim); }
+.bd-sectors { display: flex; flex-direction: column; gap: 2px; margin-bottom: 6px; }
+.bd-sector-row { display: grid; grid-template-columns: 108px 1fr 38px; gap: 5px; align-items: center; font-size: 9px; }
+.bd-sector-name { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bd-sector-track { height: 8px; background: var(--bg-secondary); border-radius: 1px; overflow: hidden; }
+.bd-sector-fill { height: 100%; }
+.bd-sector-fill.up { background: var(--accent-up); }
+.bd-sector-fill.down { background: var(--accent-down); }
+.bd-sector-pct { text-align: right; font-weight: 600; font-size: 9px; }
+.bd-movers { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.bd-mover-row { display: flex; justify-content: space-between; font-size: 10px; padding: 1px 0; border-bottom: 1px solid var(--border); cursor: pointer; }
+.bd-mover-row:hover { background: var(--bg-hover); }
+.bd-mover-sym { color: var(--text-primary); font-weight: 600; }
+
+/* --- Chart drawing tools --- */
+.draw-btns { display: flex; gap: 2px; margin-left: 8px; }
+.draw-btn {
+  padding: 3px 7px; font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em;
+  border: 1px solid var(--border); color: var(--text-dim); transition: all 0.12s;
+}
+.draw-btn:hover { color: var(--text-primary); border-color: var(--border-bright); }
+.draw-btn.active { background: var(--accent-purple); color: #fff; border-color: var(--accent-purple); }
+
+.chart-container { position: relative; }
+.chart-drawings { position: absolute; inset: 0; z-index: 3; pointer-events: none; }
+/* Only intercept clicks while a tool is armed, so panning still works. */
+.chart-drawings.active { pointer-events: auto; cursor: crosshair; }
+.dw-line { stroke: var(--accent-purple); stroke-width: 1.5; }
+.dw-hline { stroke-dasharray: 4 3; }
+.dw-rect { fill: rgba(176,96,255,0.10); stroke: var(--accent-purple); stroke-width: 1; }
+.dw-fib { stroke: var(--accent-neutral); stroke-width: 0.8; stroke-dasharray: 3 2; }
+.dw-label { fill: var(--accent-neutral); font-size: 8px; font-family: inherit; }
+.dw-pending { fill: var(--accent-purple); }

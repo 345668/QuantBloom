@@ -3,6 +3,7 @@ import { createChart, CrosshairMode } from 'lightweight-charts';
 import { useDashboard } from '../context/DashboardContext.jsx';
 import { usePolling } from '../hooks/usePolling.js';
 import { formatPrice, formatPct, formatVolume } from '../utils/format.js';
+import ChartDrawings, { TOOLS } from './ChartDrawings.jsx';
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '1D', '1W', '1M'];
 const OVERLAYS = ['MA', 'BB', 'RSI', 'MACD'];
@@ -87,6 +88,7 @@ export default function ChartPanel() {
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [quoteData, setQuoteData] = useState(null);
+  const [activeTool, setActiveTool] = useState(null);
 
   const { data: candleData, loading } = usePolling(
     `/api/v1/candles?symbol=${activeSymbol}&resolution=${activeTimeframe}`,
@@ -318,11 +320,35 @@ export default function ChartPanel() {
             </button>
           ))}
         </div>
+        <div className="draw-btns">
+          {TOOLS.map(t => (
+            <button
+              key={t.id}
+              className={`draw-btn ${activeTool === t.id ? 'active' : ''}`}
+              onClick={() => setActiveTool(activeTool === t.id ? null : t.id)}
+              title={`Draw ${t.label} — click ${t.points} point${t.points > 1 ? 's' : ''} on the chart`}
+            >
+              {t.label}
+            </button>
+          ))}
+          <button className="draw-btn" title="Undo last drawing"
+            onClick={() => chartContainerRef.current?.__drawings?.removeLast()}>Undo</button>
+          <button className="draw-btn" title="Clear all drawings for this symbol"
+            onClick={() => chartContainerRef.current?.__drawings?.clearAll()}>Clear</button>
+        </div>
       </div>
       <div className="chart-container" ref={chartContainerRef}>
         {loading && !candleData && (
           <div className="chart-loading">Loading chart data...</div>
         )}
+        <ChartDrawings
+          chartRef={chartRef}
+          seriesRef={seriesRef}
+          containerRef={chartContainerRef}
+          symbol={activeSymbol}
+          tool={activeTool}
+          onToolDone={() => setActiveTool(null)}
+        />
       </div>
       {activeOverlays.includes('RSI') && candleData?.candles && (
         <RSISubChart candles={candleData.candles} />
