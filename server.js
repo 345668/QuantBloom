@@ -3,6 +3,7 @@ import cors from 'cors';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import { SP500_BY_SECTOR, MARKET_INDICES, SP500_ALL, SYMBOL_SECTOR } from './sp500.js';
+import { INSTRUMENTS, INSTRUMENTS_BY_CLASS, INSTRUMENT_BY_SYMBOL, ASSET_CLASSES } from './instruments.js';
 import { greeks as bsGreeks, impliedVol, yearsToExpiry } from './blackscholes.js';
 
 dotenv.config();
@@ -1511,6 +1512,142 @@ async function buildPortfolioReturns(symbols, values, range = '2y') {
 
 const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
 const stdev = a => { const m = mean(a); return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / (a.length - 1 || 1)); };
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/markets?class=Sector%20ETF — multi-asset instrument board.
+// Covers indices, ETFs (broad/sector/factor/international), fixed income,
+// commodities, futures, FX and crypto in one place.
+// ---------------------------------------------------------------------------
+app.get('/api/v1/markets', async (req, res) => {
+  try {
+    const wanted = req.query.class;
+    const list = wanted && INSTRUMENTS_BY_CLASS[wanted]
+      ? INSTRUMENTS_BY_CLASS[wanted]
+      : INSTRUMENTS;
+
+    const cacheKey = `markets:${wanted || 'all'}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const quotes = await yahooQuoteBatch(list.map(i => i.symbol));
+    const bySymbol = new Map(quotes.map(q => [q.symbol, q]));
+
+    const rows = list.map(i => {
+      const q = bySymbol.get(i.symbol);
+      return {
+        symbol: i.symbol, name: i.name, class: i.class, region: i.region,
+        // Indices aren't tradeable; point at the liquid proxy instead.
+        tradeable: i.tradeable || null,
+        price: q?.price ?? null,
+        change: q?.change ?? null,
+        changePercent: q?.changePercent ?? null,
+        volume: q?.volume ?? null,
+      };
+    }).filter(r => r.price != null);
+
+    const byClass = {};
+    for (const r of rows) (byClass[r.class] ||= []).push(r);
+    // Within each class, lead with the biggest movers.
+    for (const k of Object.keys(byClass)) {
+      byClass[k].sort((a, b) => Math.abs(b.changePercent ?? 0) - Math.abs(a.changePercent ?? 0));
+    }
+
+    const result = {
+      classes: ASSET_CLASSES.filter(c => byClass[c]?.length),
+      byClass,
+      count: rows.length,
+      requested: list.length,
+    };
+
+    cacheSet(cacheKey, result, 45000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/compare?symbols=SPY,QQQ,GLD&range=1y
+// Relative performance: every series rebased to 0% at the common start date,
+// which is the only honest way to compare instruments at different price levels.
+// ---------------------------------------------------------------------------
+app.get('/api/v1/compare', async (req, res) => {
+  try {
+    const symbols = (req.query.symbols || 'SPY,QQQ')
+      .split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 8);
+    const range = ['1mo', '3mo', '6mo', '1y', '2y', '5y'].includes(req.query.range) ? req.query.range : '1y';
+    if (symbols.length < 1) return res.json({ available: false, message: 'No symbols' });
+
+    const cacheKey = `compare:${symbols.join(',')}:${range}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const interval = range === '5y' ? '1wk' : range === '2y' ? '1d' : '1d';
+    const settled = await Promise.allSettled(symbols.map(s => yahooCandles(s, interval, range)));
+
+    const raw = {};
+    settled.forEach((r, i) => {
+      if (r.status === 'fulfilled' && r.value.length > 2) raw[symbols[i]] = r.value;
+    });
+    const valid = symbols.filter(s => raw[s]);
+    if (!valid.length) return res.json({ available: false, message: 'No price history' });
+
+    // Align on the shortest series so every line starts on the same bar.
+    const len = Math.min(...valid.map(s => raw[s].length));
+    const base = {};
+    valid.forEach(s => { base[s] = raw[s][raw[s].length - len].close; });
+
+    const anchor = raw[valid[0]].slice(-len);
+    const series = anchor.map((c, idx) => {
+      const point = { time: c.time };
+      valid.forEach(s => {
+        const bar = raw[s][raw[s].length - len + idx];
+        point[s] = bar && base[s] ? +(((bar.close - base[s]) / base[s]) * 100).toFixed(2) : null;
+      });
+      return point;
+    });
+
+    // Per-instrument summary stats over the window.
+    const stats = valid.map(s => {
+      const bars = raw[s].slice(-len);
+      const closes = bars.map(b => b.close).filter(Boolean);
+      const totalReturn = ((closes[closes.length - 1] - closes[0]) / closes[0]) * 100;
+
+      const rets = [];
+      for (let i = 1; i < closes.length; i++) rets.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+      const m = rets.reduce((a, b) => a + b, 0) / (rets.length || 1);
+      const sd = Math.sqrt(rets.reduce((a, b) => a + (b - m) ** 2, 0) / (rets.length - 1 || 1));
+      // Annualise using the bar frequency implied by the interval.
+      const periodsPerYear = interval === '1wk' ? 52 : 252;
+      const vol = sd * Math.sqrt(periodsPerYear) * 100;
+
+      let peak = closes[0], maxDD = 0;
+      for (const c of closes) { if (c > peak) peak = c; maxDD = Math.max(maxDD, (peak - c) / peak); }
+
+      const years = len / periodsPerYear;
+      const annualised = years > 0 ? (Math.pow(closes[closes.length - 1] / closes[0], 1 / years) - 1) * 100 : 0;
+
+      const meta = INSTRUMENT_BY_SYMBOL[s];
+      return {
+        symbol: s,
+        name: meta?.name || s,
+        class: meta?.class || null,
+        totalReturn: +totalReturn.toFixed(2),
+        annualisedReturn: +annualised.toFixed(2),
+        volatility: +vol.toFixed(2),
+        maxDrawdown: +(maxDD * 100).toFixed(2),
+        // Excess return per unit of risk, 4.5% cash proxy.
+        sharpe: vol ? +((annualised - 4.5) / vol).toFixed(2) : null,
+      };
+    }).sort((a, b) => b.totalReturn - a.totalReturn);
+
+    const result = { available: true, symbols: valid, range, points: series.length, series, stats };
+    cacheSet(cacheKey, result, 300000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ---------------------------------------------------------------------------
 // GET /api/v1/analytics/var?symbols=..&values=..&confidence=95&horizon=1

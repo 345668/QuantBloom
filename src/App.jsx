@@ -27,6 +27,8 @@ import CorrelationPanel from './components/CorrelationPanel.jsx';
 import YieldCurvePanel from './components/YieldCurvePanel.jsx';
 import CompsPanel from './components/CompsPanel.jsx';
 import BreadthPanel from './components/BreadthPanel.jsx';
+import MarketsPanel from './components/MarketsPanel.jsx';
+import ComparePanel from './components/ComparePanel.jsx';
 import VaRPanel from './components/VaRPanel.jsx';
 import StressTestPanel from './components/StressTestPanel.jsx';
 import StrategyBuilder from './components/StrategyBuilder.jsx';
@@ -80,12 +82,18 @@ function Dashboard() {
         </div>
       </div>
 
-      {/* Row 2: News + Heatmap + Indices/Forex/Crypto */}
+      {/* Row 2: Markets board + Compare + Indices */}
+      <div className="dashboard-row row-3col">
+        <MarketsPanel />
+        <ComparePanel />
+        <IndicesPanel />
+      </div>
+
+      {/* Row 3: News + Heatmap + Forex/Crypto */}
       <div className="dashboard-row row-3col">
         <NewsFeedPanel />
         <HeatmapPanel />
         <div className="col-stack">
-          <IndicesPanel />
           <ForexPanel />
           <CryptoPanel />
         </div>
