@@ -6,7 +6,7 @@
 // ---------------------------------------------------------------------------
 
 import { evaluateOrder, checkHaltConditions, DEFAULT_LIMITS } from './risk-gate.js';
-import { ensemble, sizePosition, STRATEGIES } from './strategies.js';
+import { ensemble, sizePosition, STRATEGIES, PRESETS, describeStrategies, describePresets } from './strategies.js';
 import { reviewDecision, applyReview, mistralConfigured, getBudget } from './mistral.js';
 import * as broker from './alpaca.js';
 
@@ -17,7 +17,9 @@ const state = {
   requiresManualRestart: false,
   mode: 'paper',
   watchlist: ['AAPL', 'MSFT', 'NVDA', 'SPY', 'QQQ'],
-  strategies: Object.keys(STRATEGIES),
+  strategies: PRESETS.balanced.strategies,
+  threshold: PRESETS.balanced.threshold,
+  preset: 'balanced',
   useLlm: true,
   limits: { ...DEFAULT_LIMITS },
   ordersToday: 0,
@@ -60,6 +62,8 @@ export function getState() {
     isPaper: broker.isPaperEndpoint(),
     llmConfigured: mistralConfigured(),
     llmBudget: getBudget(),
+    availableStrategies: describeStrategies(),
+    availablePresets: describePresets(),
   };
 }
 
@@ -86,8 +90,23 @@ export function updateConfig(patch = {}) {
   if (Array.isArray(patch.watchlist)) {
     state.watchlist = patch.watchlist.map(s => String(s).toUpperCase()).slice(0, 20);
   }
+  // A preset sets both the strategy set and the agreement threshold; an
+  // explicit strategies/threshold patch afterwards marks the config custom.
+  if (patch.preset && PRESETS[patch.preset]) {
+    const p = PRESETS[patch.preset];
+    state.preset = patch.preset;
+    state.strategies = [...p.strategies];
+    state.threshold = p.threshold;
+  }
   if (Array.isArray(patch.strategies)) {
-    state.strategies = patch.strategies.filter(k => STRATEGIES[k]);
+    const next = patch.strategies.filter(k => STRATEGIES[k]);
+    // Refuse to disable everything — that would silently stop the bot rather
+    // than stopping it via the switch, which is the honest control.
+    if (next.length) { state.strategies = next; state.preset = 'custom'; }
+  }
+  if (patch.threshold != null) {
+    const t = Number(patch.threshold);
+    if (Number.isFinite(t) && t >= 0 && t <= 1) { state.threshold = t; state.preset = 'custom'; }
   }
   if (typeof patch.useLlm === 'boolean') state.useLlm = patch.useLlm;
   if (patch.limits && typeof patch.limits === 'object') {
@@ -189,7 +208,7 @@ export async function runCycle({ fetchTechnical, fetchNews, dryRun = false }) {
         continue;
       }
 
-      let decision = ensemble(technical, state.strategies);
+      let decision = ensemble(technical, state.strategies, state.threshold);
 
       // Advisory review only where there is something to review.
       if (state.useLlm && mistralConfigured() && decision.action !== 'HOLD') {

@@ -413,3 +413,111 @@ sophisticated model. That ordering is the whole point.
    modules, or reimplement against our own data layer? Recommendation:
    reference and reimplement — their data assumptions differ from ours enough
    that direct reuse creates more integration debt than it saves.
+
+---
+
+# Appendix A — The ML4T library ecosystem
+
+Source: <https://ml4trading.io/libraries/> — six Python libraries by Stefan
+Jansen (author of *Machine Learning for Algorithmic Trading*), all public.
+
+| Library | Stage | GitHub |
+|---------|-------|--------|
+| ml4t-data | Data acquisition | <https://github.com/ml4t/data> |
+| ml4t-engineer | Features & labels | <https://github.com/ml4t/engineer> |
+| ml4t-models | Finance-native models | <https://github.com/ml4t/models> |
+| ml4t-diagnostic | Validation & overfitting guards | <https://github.com/ml4t/diagnostic> |
+| ml4t-backtest | Event-driven backtesting | <https://github.com/ml4t/backtest> |
+| ml4t-live | Live/paper execution | <https://github.com/ml4t/live> |
+
+## A.1 The architectural finding that matters most
+
+**`ml4t-backtest` and `ml4t-live` run the same `Strategy` class unchanged.**
+
+This is the single most valuable idea on the page, and it is the one to copy
+regardless of whether we ever import a line of their code. If backtest and live
+execution run different code paths, the backtest is not testing the thing you
+deploy — and every divergence becomes a bug you only discover with money at
+risk.
+
+Our `Signal` contract in §4 already anticipates this. When the backtester is
+built (§5 Phase 1) it must consume the *same* `bot/strategies.js` functions the
+live engine calls, not a reimplementation.
+
+`ml4t-live` also validates the safety design already shipped: it offers a
+**shadow → paper → live** progression, a 16-parameter risk configuration, and a
+crash-safe kill switch. Our risk gate and kill switch are the same shape.
+
+## A.2 The overfitting guards — the most useful thing to steal
+
+`ml4t-diagnostic` implements four checks that are rare in retail quant work and
+directly address the concern raised in §5 Phase 1:
+
+- **Deflated Sharpe Ratio** — adjusts Sharpe for the number of strategy
+  variants tried. Test 100 strategies and the best one looks excellent by
+  chance alone; DSR tells you how much of that is luck.
+- **Probability of Backtest Overfitting (PBO)** — the probability that the
+  strategy which ranked best in-sample underperforms out-of-sample.
+- **Rademacher Anti-Serum (RAS)** — bounds the optimism from selecting the best
+  performer out of many.
+- **False Discovery Rate** — controls for multiple hypothesis testing.
+
+Plus **combinatorial purged cross-validation (CPCV)** — the correct CV scheme
+for time series with overlapping labels, which ordinary k-fold gets wrong by
+leaking future information.
+
+**This is the answer to "how do I know my bot works?"** A backtest Sharpe of 2.0
+means nothing on its own. A Deflated Sharpe that survives after accounting for
+how many variants were tried means something. Any bot we train should report
+DSR and PBO alongside raw performance, or the numbers invite self-deception.
+
+## A.3 Feature engineering worth adopting
+
+`ml4t-engineer` provides 120 indicators across 11 categories, plus two concepts
+our current pipeline lacks:
+
+- **Triple-barrier labeling** (López de Prado). Instead of "did price rise over
+  the next N days?", label by which of three barriers is hit first: profit
+  target, stop loss, or time limit. This matches how a trade actually ends and
+  produces far more meaningful targets than fixed-horizon returns.
+- **Alternative bars** — volume, dollar, and tick-imbalance bars instead of
+  time bars. Time bars oversample quiet periods and undersample active ones;
+  information does not arrive at a constant rate.
+- **Fractional differentiation** — makes a series stationary while retaining
+  memory, unlike simple differencing which discards it.
+
+## A.4 Realistic integration path
+
+Same constraint as §3: these are Python, our terminal is Node. Three options,
+in order of preference.
+
+**Option 1 — Adopt the ideas, not the dependency (recommended now).**
+Implement DSR, PBO, and CPCV in our own tested JS modules alongside
+`blackscholes.js` and `regression.js`. They are a few hundred lines of maths
+each, and we already have the testing discipline for this. No Python runtime,
+no deployment change.
+
+**Option 2 — Python sidecar for research only.** Run `ml4t-engineer` and
+`ml4t-diagnostic` offline to generate features and validate strategies, then
+export the resulting parameters as JSON for the JS engine to consume. Research
+in Python, execution in Node. Avoids a production Python dependency.
+
+**Option 3 — Full Python strategy service.** The §4 architecture. Justified
+only once ML models are actually in use; premature before then.
+
+**Recommendation:** Option 1 for the backtester and its guards, then Option 2
+when ML models arrive. Option 3 only if the models earn it.
+
+## A.5 What this changes about training bots
+
+The current bot's five strategies are *rule-based and unvalidated*. Before
+training anything more sophisticated:
+
+1. **Build the backtester** (§5 Phase 1) sharing `bot/strategies.js` with the
+   live engine, per A.1.
+2. **Report DSR and PBO**, not just Sharpe, per A.2.
+3. **Only then** train ML models, using triple-barrier labels and purged CV.
+
+Training a DQN or a GBM before there is an honest evaluation harness produces a
+number nobody should trust — and the more effort spent on the model, the more
+tempting it becomes to believe it.

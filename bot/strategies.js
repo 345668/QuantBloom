@@ -67,12 +67,89 @@ export function consensusStrategy(ta) {
 }
 
 export const STRATEGIES = {
-  rsi: { name: 'RSI Reversion', fn: rsiStrategy, weight: 1 },
-  macd: { name: 'MACD Momentum', fn: macdStrategy, weight: 1 },
-  trend: { name: 'Trend Following', fn: trendStrategy, weight: 1.5 },
-  bollinger: { name: 'Bollinger Reversion', fn: bollingerStrategy, weight: 1 },
-  consensus: { name: 'Indicator Consensus', fn: consensusStrategy, weight: 2 },
+  rsi: {
+    name: 'RSI Reversion', fn: rsiStrategy, weight: 1,
+    family: 'Mean reversion',
+    description: 'Buys oversold (RSI<30), sells overbought (RSI>70).',
+    worksWhen: 'Range-bound markets', failsWhen: 'Strong trends — stays overbought for months',
+  },
+  macd: {
+    name: 'MACD Momentum', fn: macdStrategy, weight: 1,
+    family: 'Momentum',
+    description: 'Follows the MACD histogram sign, scaled by size relative to price.',
+    worksWhen: 'Sustained directional moves', failsWhen: 'Choppy markets — whipsaws',
+  },
+  trend: {
+    name: 'Trend Following', fn: trendStrategy, weight: 1.5,
+    family: 'Trend',
+    description: '50/200 golden and death cross, confirmed by price vs the 50-day.',
+    worksWhen: 'Long sustained trends', failsWhen: 'Sideways markets — late entries and exits',
+  },
+  bollinger: {
+    name: 'Bollinger Reversion', fn: bollingerStrategy, weight: 1,
+    family: 'Mean reversion',
+    description: 'Fades moves outside the 20/2 bands.',
+    worksWhen: 'Stable volatility', failsWhen: 'Volatility expansion — fades a breakout',
+  },
+  consensus: {
+    name: 'Indicator Consensus', fn: consensusStrategy, weight: 2,
+    family: 'Ensemble',
+    description: 'Net vote across all 12 indicators in the technical engine.',
+    worksWhen: 'Most regimes; the broadest signal', failsWhen: 'Regime turns — indicators lag together',
+  },
 };
+
+/**
+ * Presets. These change how much the bot trades, not which markets it likes:
+ * fewer strategies and a higher agreement bar means fewer, higher-conviction
+ * trades. "Trend only" and "Reversion only" exist because the two families
+ * fail in opposite conditions, and pairing them is what makes the ensemble
+ * mostly sit still.
+ */
+export const PRESETS = {
+  conservative: {
+    name: 'Conservative',
+    description: 'Trend and consensus only. Trades rarely, needs strong agreement.',
+    strategies: ['trend', 'consensus'],
+    threshold: 0.3,
+  },
+  balanced: {
+    name: 'Balanced',
+    description: 'All five strategies with a moderate agreement bar.',
+    strategies: ['rsi', 'macd', 'trend', 'bollinger', 'consensus'],
+    threshold: 0.15,
+  },
+  aggressive: {
+    name: 'Aggressive',
+    description: 'All five, acts on weaker agreement. Trades much more often.',
+    strategies: ['rsi', 'macd', 'trend', 'bollinger', 'consensus'],
+    threshold: 0.08,
+  },
+  trendOnly: {
+    name: 'Trend only',
+    description: 'Momentum and trend. Suited to directional markets.',
+    strategies: ['trend', 'macd'],
+    threshold: 0.2,
+  },
+  reversionOnly: {
+    name: 'Reversion only',
+    description: 'RSI and Bollinger. Suited to range-bound markets.',
+    strategies: ['rsi', 'bollinger'],
+    threshold: 0.2,
+  },
+};
+
+/** Serialisable metadata for the UI. */
+export function describeStrategies() {
+  return Object.entries(STRATEGIES).map(([key, s]) => ({
+    key, name: s.name, family: s.family, weight: s.weight,
+    description: s.description, worksWhen: s.worksWhen, failsWhen: s.failsWhen,
+  }));
+}
+
+export function describePresets() {
+  return Object.entries(PRESETS).map(([key, p]) => ({ key, ...p }));
+}
 
 /**
  * Combine strategy signals into one decision.
@@ -81,7 +158,7 @@ export const STRATEGIES = {
  * and the resulting confidence — and therefore the position size — shrinks.
  * That is preferable to picking a side and sizing as though it were certain.
  */
-export function ensemble(ta, enabledKeys = Object.keys(STRATEGIES)) {
+export function ensemble(ta, enabledKeys = Object.keys(STRATEGIES), threshold = 0.15) {
   const signals = [];
   let buyScore = 0, sellScore = 0, totalWeight = 0;
 
@@ -101,17 +178,18 @@ export function ensemble(ta, enabledKeys = Object.keys(STRATEGIES)) {
   }
 
   const net = (buyScore - sellScore) / totalWeight;
-  const action = net > 0.15 ? 'BUY' : net < -0.15 ? 'SELL' : 'HOLD';
+  const action = net > threshold ? 'BUY' : net < -threshold ? 'SELL' : 'HOLD';
   const agreeing = signals.filter(s => s.action === action).length;
 
   return {
     action,
     confidence: +clamp01(Math.abs(net)).toFixed(3),
     netScore: +net.toFixed(3),
+    threshold,
     signals,
     agreement: `${agreeing}/${signals.length}`,
     rationale: action === 'HOLD'
-      ? `Signals too mixed to act (net ${net.toFixed(2)})`
+      ? `Signals too mixed to act (net ${net.toFixed(2)}, needs ${threshold})`
       : `${agreeing} of ${signals.length} strategies agree on ${action}`,
   };
 }

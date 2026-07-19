@@ -1033,13 +1033,99 @@ function consensusStrategy(ta) {
   return { action: "HOLD", confidence: 0, rationale: "Indicators mixed" };
 }
 var STRATEGIES = {
-  rsi: { name: "RSI Reversion", fn: rsiStrategy, weight: 1 },
-  macd: { name: "MACD Momentum", fn: macdStrategy, weight: 1 },
-  trend: { name: "Trend Following", fn: trendStrategy, weight: 1.5 },
-  bollinger: { name: "Bollinger Reversion", fn: bollingerStrategy, weight: 1 },
-  consensus: { name: "Indicator Consensus", fn: consensusStrategy, weight: 2 }
+  rsi: {
+    name: "RSI Reversion",
+    fn: rsiStrategy,
+    weight: 1,
+    family: "Mean reversion",
+    description: "Buys oversold (RSI<30), sells overbought (RSI>70).",
+    worksWhen: "Range-bound markets",
+    failsWhen: "Strong trends \u2014 stays overbought for months"
+  },
+  macd: {
+    name: "MACD Momentum",
+    fn: macdStrategy,
+    weight: 1,
+    family: "Momentum",
+    description: "Follows the MACD histogram sign, scaled by size relative to price.",
+    worksWhen: "Sustained directional moves",
+    failsWhen: "Choppy markets \u2014 whipsaws"
+  },
+  trend: {
+    name: "Trend Following",
+    fn: trendStrategy,
+    weight: 1.5,
+    family: "Trend",
+    description: "50/200 golden and death cross, confirmed by price vs the 50-day.",
+    worksWhen: "Long sustained trends",
+    failsWhen: "Sideways markets \u2014 late entries and exits"
+  },
+  bollinger: {
+    name: "Bollinger Reversion",
+    fn: bollingerStrategy,
+    weight: 1,
+    family: "Mean reversion",
+    description: "Fades moves outside the 20/2 bands.",
+    worksWhen: "Stable volatility",
+    failsWhen: "Volatility expansion \u2014 fades a breakout"
+  },
+  consensus: {
+    name: "Indicator Consensus",
+    fn: consensusStrategy,
+    weight: 2,
+    family: "Ensemble",
+    description: "Net vote across all 12 indicators in the technical engine.",
+    worksWhen: "Most regimes; the broadest signal",
+    failsWhen: "Regime turns \u2014 indicators lag together"
+  }
 };
-function ensemble(ta, enabledKeys = Object.keys(STRATEGIES)) {
+var PRESETS = {
+  conservative: {
+    name: "Conservative",
+    description: "Trend and consensus only. Trades rarely, needs strong agreement.",
+    strategies: ["trend", "consensus"],
+    threshold: 0.3
+  },
+  balanced: {
+    name: "Balanced",
+    description: "All five strategies with a moderate agreement bar.",
+    strategies: ["rsi", "macd", "trend", "bollinger", "consensus"],
+    threshold: 0.15
+  },
+  aggressive: {
+    name: "Aggressive",
+    description: "All five, acts on weaker agreement. Trades much more often.",
+    strategies: ["rsi", "macd", "trend", "bollinger", "consensus"],
+    threshold: 0.08
+  },
+  trendOnly: {
+    name: "Trend only",
+    description: "Momentum and trend. Suited to directional markets.",
+    strategies: ["trend", "macd"],
+    threshold: 0.2
+  },
+  reversionOnly: {
+    name: "Reversion only",
+    description: "RSI and Bollinger. Suited to range-bound markets.",
+    strategies: ["rsi", "bollinger"],
+    threshold: 0.2
+  }
+};
+function describeStrategies() {
+  return Object.entries(STRATEGIES).map(([key3, s]) => ({
+    key: key3,
+    name: s.name,
+    family: s.family,
+    weight: s.weight,
+    description: s.description,
+    worksWhen: s.worksWhen,
+    failsWhen: s.failsWhen
+  }));
+}
+function describePresets() {
+  return Object.entries(PRESETS).map(([key3, p]) => ({ key: key3, ...p }));
+}
+function ensemble(ta, enabledKeys = Object.keys(STRATEGIES), threshold = 0.15) {
   const signals = [];
   let buyScore = 0, sellScore = 0, totalWeight = 0;
   for (const key3 of enabledKeys) {
@@ -1056,15 +1142,16 @@ function ensemble(ta, enabledKeys = Object.keys(STRATEGIES)) {
     return { action: "HOLD", confidence: 0, signals: [], rationale: "No signals available" };
   }
   const net = (buyScore - sellScore) / totalWeight;
-  const action = net > 0.15 ? "BUY" : net < -0.15 ? "SELL" : "HOLD";
+  const action = net > threshold ? "BUY" : net < -threshold ? "SELL" : "HOLD";
   const agreeing = signals.filter((s) => s.action === action).length;
   return {
     action,
     confidence: +clamp01(Math.abs(net)).toFixed(3),
     netScore: +net.toFixed(3),
+    threshold,
     signals,
     agreement: `${agreeing}/${signals.length}`,
-    rationale: action === "HOLD" ? `Signals too mixed to act (net ${net.toFixed(2)})` : `${agreeing} of ${signals.length} strategies agree on ${action}`
+    rationale: action === "HOLD" ? `Signals too mixed to act (net ${net.toFixed(2)}, needs ${threshold})` : `${agreeing} of ${signals.length} strategies agree on ${action}`
   };
 }
 function sizePosition(decision, equity, price, maxPositionPercent = 5) {
@@ -1316,7 +1403,9 @@ var state = {
   requiresManualRestart: false,
   mode: "paper",
   watchlist: ["AAPL", "MSFT", "NVDA", "SPY", "QQQ"],
-  strategies: Object.keys(STRATEGIES),
+  strategies: PRESETS.balanced.strategies,
+  threshold: PRESETS.balanced.threshold,
+  preset: "balanced",
   useLlm: true,
   limits: { ...DEFAULT_LIMITS },
   ordersToday: 0,
@@ -1351,7 +1440,9 @@ function getState() {
     brokerConfigured: alpacaConfigured(),
     isPaper: isPaperEndpoint(),
     llmConfigured: mistralConfigured(),
-    llmBudget: getBudget()
+    llmBudget: getBudget(),
+    availableStrategies: describeStrategies(),
+    availablePresets: describePresets()
   };
 }
 function setEnabled(enabled, who = "user") {
@@ -1373,8 +1464,25 @@ function updateConfig(patch = {}) {
   if (Array.isArray(patch.watchlist)) {
     state.watchlist = patch.watchlist.map((s) => String(s).toUpperCase()).slice(0, 20);
   }
+  if (patch.preset && PRESETS[patch.preset]) {
+    const p = PRESETS[patch.preset];
+    state.preset = patch.preset;
+    state.strategies = [...p.strategies];
+    state.threshold = p.threshold;
+  }
   if (Array.isArray(patch.strategies)) {
-    state.strategies = patch.strategies.filter((k) => STRATEGIES[k]);
+    const next = patch.strategies.filter((k) => STRATEGIES[k]);
+    if (next.length) {
+      state.strategies = next;
+      state.preset = "custom";
+    }
+  }
+  if (patch.threshold != null) {
+    const t = Number(patch.threshold);
+    if (Number.isFinite(t) && t >= 0 && t <= 1) {
+      state.threshold = t;
+      state.preset = "custom";
+    }
   }
   if (typeof patch.useLlm === "boolean") state.useLlm = patch.useLlm;
   if (patch.limits && typeof patch.limits === "object") {
@@ -1464,7 +1572,7 @@ async function runCycle({ fetchTechnical, fetchNews, dryRun = false }) {
         results.push({ symbol, action: "SKIP", reason: "No technical data" });
         continue;
       }
-      let decision = ensemble(technical, state.strategies);
+      let decision = ensemble(technical, state.strategies, state.threshold);
       if (state.useLlm && mistralConfigured() && decision.action !== "HOLD") {
         const news = fetchNews ? await fetchNews(symbol).catch(() => []) : [];
         const review = await reviewDecision({

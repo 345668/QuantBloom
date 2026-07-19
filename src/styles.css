@@ -2180,3 +2180,50 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
 .bot-dec-llm { font-size: 9px; color: var(--text-dim); line-height: 1.35; margin-top: 1px; }
 .bot-llm-stance { font-weight: 700; margin-right: 4px; }
 .bot-dec-gate { font-size: 9px; color: var(--accent-down); margin-top: 1px; }
+
+/* --- Portfolio source tags --- */
+.pf-source-note { font-size: 9px; color: var(--text-dim); padding: 3px 0 5px; line-height: 1.4; }
+.pf-src-tag {
+  font-size: 7px; font-weight: 700; padding: 0 3px; margin-left: 4px;
+  border-radius: 2px; background: var(--bg-hover); color: var(--text-dim);
+}
+.pf-src-tag.bot { background: rgba(0,136,255,0.18); color: var(--accent-blue); }
+
+/* --- Bot model / strategy switcher --- */
+.bot-strat-head { display: flex; justify-content: space-between; align-items: center; }
+.bot-link { font-size: 9px; color: var(--accent-blue); text-transform: none; letter-spacing: 0; }
+.bot-presets { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 6px; }
+.bot-preset {
+  padding: 2px 7px; font-size: 9px; border: 1px solid var(--border);
+  color: var(--text-dim); white-space: nowrap;
+}
+.bot-preset:hover:not(:disabled) { color: var(--text-primary); }
+.bot-preset.active { background: var(--text-primary); color: var(--bg-primary); border-color: var(--text-primary); }
+
+.bot-strategies {
+  border: 1px solid var(--border); background: var(--bg-secondary);
+  padding: 6px; margin-bottom: 6px;
+}
+.bot-strat { padding: 3px 0; border-bottom: 1px solid var(--border); }
+.bot-strat:last-of-type { border-bottom: none; }
+.bot-strat-toggle { display: flex; align-items: center; gap: 5px; width: 100%; text-align: left; }
+.bot-chk {
+  width: 12px; height: 12px; border: 1px solid var(--border-bright); border-radius: 2px;
+  font-size: 9px; line-height: 11px; text-align: center; color: var(--bg-primary); flex-shrink: 0;
+}
+.bot-chk.on { background: var(--accent-up); border-color: var(--accent-up); }
+.bot-strat-name { font-size: 10px; font-weight: 600; color: var(--text-body); }
+.bot-strat.on .bot-strat-name { color: var(--text-primary); }
+.bot-strat-family {
+  font-size: 7px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-dim); margin-left: auto;
+}
+.bot-strat-desc { font-size: 8px; color: var(--text-secondary); padding-left: 17px; line-height: 1.35; }
+.bot-strat-when { display: flex; flex-direction: column; font-size: 8px; padding-left: 17px; line-height: 1.35; opacity: 0.75; }
+
+.bot-threshold { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--border); }
+.bot-threshold label { display: flex; justify-content: space-between; font-size: 9px; color: var(--text-dim); text-transform: uppercase; }
+.bot-thr-val { color: var(--text-primary); font-weight: 700; }
+.bot-threshold input[type=range] { width: 100%; margin: 2px 0; accent-color: var(--text-primary); }
+.bot-thr-hint { font-size: 8px; color: var(--text-dim); }
+.bot-llm-toggle { display: flex; align-items: center; gap: 5px; font-size: 9px; color: var(--text-secondary); margin-top: 5px; }

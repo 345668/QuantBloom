@@ -18,6 +18,7 @@ export default function BotPanel() {
   const [error, setError] = useState(null);
   const [confirmKill, setConfirmKill] = useState(false);
   const [lastRun, setLastRun] = useState(null);
+  const [showStrategies, setShowStrategies] = useState(false);
 
   const { data: decisions } = usePolling('/api/v1/bot/decisions?limit=8', 15000);
 
@@ -131,6 +132,73 @@ export default function BotPanel() {
           {lastRun.ok
             ? `${lastRun.dryRun ? 'Dry run' : 'Cycle'} · ${lastRun.results?.length ?? 0} symbols · ${lastRun.results?.filter(r => r.submitted).length ?? 0} orders`
             : `Skipped: ${lastRun.skipped || lastRun.error}`}
+        </div>
+      )}
+
+      {/* Models & strategies */}
+      <h4 className="sub-title bot-strat-head">
+        <span>Model</span>
+        <button className="bot-link" onClick={() => setShowStrategies(!showStrategies)}>
+          {showStrategies ? 'hide' : 'configure'}
+        </button>
+      </h4>
+
+      <div className="bot-presets">
+        {(data.availablePresets || []).map(p => (
+          <button key={p.key}
+            className={`bot-preset ${data.preset === p.key ? 'active' : ''}`}
+            title={p.description}
+            disabled={busy === 'preset'}
+            onClick={() => act('preset', () => post('/api/v1/bot/config', { preset: p.key }))}>
+            {p.name}
+          </button>
+        ))}
+        {data.preset === 'custom' && <span className="bot-preset active">Custom</span>}
+      </div>
+
+      {showStrategies && (
+        <div className="bot-strategies">
+          {(data.availableStrategies || []).map(st => {
+            const on = data.strategies?.includes(st.key);
+            return (
+              <div key={st.key} className={`bot-strat ${on ? 'on' : ''}`}>
+                <button className="bot-strat-toggle"
+                  disabled={busy === 'strat'}
+                  onClick={() => {
+                    const next = on
+                      ? data.strategies.filter(k => k !== st.key)
+                      : [...(data.strategies || []), st.key];
+                    if (!next.length) return; // never disable everything
+                    act('strat', () => post('/api/v1/bot/config', { strategies: next }));
+                  }}>
+                  <span className={`bot-chk ${on ? 'on' : ''}`}>{on ? '✓' : ''}</span>
+                  <span className="bot-strat-name">{st.name}</span>
+                  <span className="bot-strat-family">{st.family}</span>
+                </button>
+                <div className="bot-strat-desc">{st.description}</div>
+                <div className="bot-strat-when">
+                  <span className="positive">Works: {st.worksWhen}</span>
+                  <span className="negative">Fails: {st.failsWhen}</span>
+                </div>
+              </div>
+            );
+          })}
+
+          <div className="bot-threshold">
+            <label>
+              Agreement threshold
+              <span className="bot-thr-val">{data.threshold}</span>
+            </label>
+            <input type="range" min="0.05" max="0.5" step="0.01" value={data.threshold ?? 0.15}
+              onChange={e => act('thr', () => post('/api/v1/bot/config', { threshold: Number(e.target.value) }))} />
+            <span className="bot-thr-hint">Higher = fewer, higher-conviction trades</span>
+          </div>
+
+          <label className="bot-llm-toggle">
+            <input type="checkbox" checked={Boolean(data.useLlm)} disabled={!data.llmConfigured}
+              onChange={e => act('llm', () => post('/api/v1/bot/config', { useLlm: e.target.checked }))} />
+            Mistral review {data.llmConfigured ? '' : '(no API key)'}
+          </label>
         </div>
       )}
 

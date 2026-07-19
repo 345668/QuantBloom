@@ -136,4 +136,56 @@ export function usePortfolio() {
   return { lots, addLot, removeLot, clearAll, positions: withWeights, realised, totals };
 }
 
+/**
+ * Positions held in the Alpaca (paper) account the bot trades.
+ *
+ * Kept separate from the manual book rather than merged: these are a different
+ * account with its own cash, and silently combining them would misreport both
+ * weights and P&L. Callers choose which to show.
+ */
+export function useBrokerPortfolio() {
+  const { data } = usePolling('/api/v1/bot/status', 15000);
+
+  const positions = useMemo(() => (data?.positions || []).map(p => ({
+    symbol: p.symbol,
+    quantity: p.qty,
+    avgPrice: p.avgEntryPrice,
+    price: p.currentPrice,
+    costBasis: p.costBasis,
+    marketValue: p.marketValue,
+    unrealisedPnl: p.unrealisedPnl,
+    unrealisedPct: p.unrealisedPercent,
+    source: 'broker',
+  })), [data]);
+
+  const totals = useMemo(() => {
+    const marketValue = positions.reduce((s, p) => s + (p.marketValue || 0), 0);
+    const costBasis = positions.reduce((s, p) => s + (p.costBasis || 0), 0);
+    const unrealisedPnl = marketValue - costBasis;
+    return {
+      marketValue, costBasis, unrealisedPnl,
+      unrealisedPct: costBasis ? (unrealisedPnl / costBasis) * 100 : 0,
+      // Account-level figures come from the broker, not derived from positions.
+      equity: data?.account?.equity ?? null,
+      cash: data?.account?.cash ?? null,
+      dayPnl: data?.account?.dailyPnl ?? null,
+      dayPnlPercent: data?.account?.dailyPnlPercent ?? null,
+      positionCount: positions.length,
+    };
+  }, [positions, data]);
+
+  const withWeights = useMemo(() => positions.map(p => ({
+    ...p,
+    weight: totals.marketValue ? (p.marketValue / totals.marketValue) * 100 : null,
+  })), [positions, totals.marketValue]);
+
+  return {
+    positions: withWeights,
+    totals,
+    connected: Boolean(data?.brokerConfigured),
+    isPaper: data?.isPaper ?? null,
+    botEnabled: data?.enabled ?? false,
+  };
+}
+
 export default usePortfolio;
