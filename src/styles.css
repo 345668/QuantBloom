@@ -136,17 +136,34 @@ a { text-decoration: none; color: inherit; }
   display: flex;
   background: #050505;
   border-bottom: 1px solid var(--border);
-  overflow-x: auto;
-  scrollbar-width: none;
+  overflow: hidden;
+  position: relative;
 }
 
-.ticker-bar::-webkit-scrollbar { display: none; }
-
-.ticker-scroll {
+/* Marquee: the track holds two copies of the list and slides from -50% to 0,
+   so items travel left → right and the loop point is seamless. */
+.ticker-track {
   display: flex;
-  gap: 0;
   white-space: nowrap;
-  min-width: 100%;
+  width: max-content;
+  animation-name: ticker-scroll-ltr;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+@keyframes ticker-scroll-ltr {
+  from { transform: translateX(-50%); }
+  to   { transform: translateX(0); }
+}
+
+/* Let users read a quote without chasing it. */
+.ticker-bar:hover .ticker-track { animation-play-state: paused; }
+
+/* Respect users who don't want motion. */
+@media (prefers-reduced-motion: reduce) {
+  .ticker-track { animation: none; }
+  .ticker-bar { overflow-x: auto; scrollbar-width: none; }
+  .ticker-bar::-webkit-scrollbar { display: none; }
 }
 
 .ticker-item {
