@@ -27,6 +27,9 @@ import CorrelationPanel from './components/CorrelationPanel.jsx';
 import YieldCurvePanel from './components/YieldCurvePanel.jsx';
 import CompsPanel from './components/CompsPanel.jsx';
 import BreadthPanel from './components/BreadthPanel.jsx';
+import VaRPanel from './components/VaRPanel.jsx';
+import StressTestPanel from './components/StressTestPanel.jsx';
+import StrategyBuilder from './components/StrategyBuilder.jsx';
 
 function Dashboard() {
   const { state, dispatch } = useDashboard();
@@ -119,7 +122,14 @@ function Dashboard() {
         <CompsPanel />
       </div>
 
-      {/* Row 7: Financials + Options */}
+      {/* Row 7: Quantitative risk */}
+      <div className="dashboard-row row-3col">
+        <VaRPanel />
+        <StressTestPanel />
+        <StrategyBuilder />
+      </div>
+
+      {/* Row 8: Financials + Options */}
       <div className="dashboard-row row-2col">
         <FinancialsPanel />
         <OptionsPanel />

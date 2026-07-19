@@ -3,6 +3,7 @@ import cors from 'cors';
 import fetch from 'node-fetch';
 import dotenv from 'dotenv';
 import { SP500_BY_SECTOR, MARKET_INDICES, SP500_ALL, SYMBOL_SECTOR } from './sp500.js';
+import { greeks as bsGreeks, impliedVol, yearsToExpiry } from './blackscholes.js';
 
 dotenv.config();
 
@@ -553,6 +554,10 @@ app.get('/api/v1/candles', async (req, res) => {
       '1D': { interval: '1d', range: '6mo', ttl: 55000 },
       '1W': { interval: '1wk', range: '2y', ttl: 55000 },
       '1M': { interval: '1mo', range: '5y', ttl: 55000 },
+      // Longer horizons: daily bars over a year reads well, weekly over
+      // five years keeps the series a sane length.
+      '1Y': { interval: '1d', range: '1y', ttl: 55000 },
+      '5Y': { interval: '1wk', range: '5y', ttl: 300000 },
     };
     const config = resolutionMap[resolution] || resolutionMap['15m'];
     const candles = await yahooCandles(symbol, config.interval, range !== '1d' ? range : config.range);
@@ -1464,6 +1469,240 @@ app.get('/api/v1/analytics/correlation', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Shared helper: build a value-weighted portfolio return series from daily
+// candles. Used by VaR and stress testing.
+// ---------------------------------------------------------------------------
+async function buildPortfolioReturns(symbols, values, range = '2y') {
+  const settled = await Promise.allSettled(symbols.map(s => yahooCandles(s, '1d', range)));
+
+  const seriesBySymbol = {};
+  settled.forEach((r, i) => {
+    if (r.status !== 'fulfilled' || r.value.length < 30) return;
+    const closes = r.value.map(c => c.close);
+    const rets = [];
+    for (let j = 1; j < closes.length; j++) {
+      if (closes[j] && closes[j - 1]) rets.push((closes[j] - closes[j - 1]) / closes[j - 1]);
+    }
+    seriesBySymbol[symbols[i]] = rets;
+  });
+
+  const valid = symbols.filter(s => seriesBySymbol[s]);
+  if (!valid.length) return null;
+
+  const totalValue = valid.reduce((s, sym) => s + (values[symbols.indexOf(sym)] || 0), 0);
+  if (totalValue <= 0) return null;
+
+  const len = Math.min(...valid.map(s => seriesBySymbol[s].length));
+  const weights = valid.map(s => (values[symbols.indexOf(s)] || 0) / totalValue);
+
+  // Align to the shortest series (most recent observations).
+  const portfolio = [];
+  for (let t = 0; t < len; t++) {
+    let r = 0;
+    valid.forEach((s, i) => {
+      const arr = seriesBySymbol[s];
+      r += arr[arr.length - len + t] * weights[i];
+    });
+    portfolio.push(r);
+  }
+
+  return { portfolio, valid, weights, totalValue, seriesBySymbol, len };
+}
+
+const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+const stdev = a => { const m = mean(a); return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / (a.length - 1 || 1)); };
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/analytics/var?symbols=..&values=..&confidence=95&horizon=1
+// Value at Risk by three methods, plus Conditional VaR (expected shortfall).
+// ---------------------------------------------------------------------------
+app.get('/api/v1/analytics/var', async (req, res) => {
+  try {
+    const symbols = (req.query.symbols || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 15);
+    const values = (req.query.values || '').split(',').map(v => parseFloat(v) || 0);
+    const confidence = Math.min(Math.max(parseFloat(req.query.confidence) || 95, 50), 99.9);
+    const horizon = Math.min(Math.max(parseInt(req.query.horizon) || 1, 1), 30);
+
+    if (symbols.length < 1) return res.json({ available: false, message: 'No positions' });
+
+    const cacheKey = `var:${symbols.join(',')}:${values.join(',')}:${confidence}:${horizon}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const built = await buildPortfolioReturns(symbols, values);
+    if (!built || built.portfolio.length < 30) {
+      return res.json({ available: false, message: 'Insufficient price history' });
+    }
+    const { portfolio, totalValue, valid } = built;
+
+    const alpha = 1 - confidence / 100;          // tail probability
+    const scale = Math.sqrt(horizon);            // square-root-of-time rule
+    const mu = mean(portfolio);
+    const sigma = stdev(portfolio);
+
+    // --- 1. Historical: empirical quantile of realised returns ---
+    const sorted = [...portfolio].sort((a, b) => a - b);
+    const idx = Math.max(0, Math.floor(alpha * sorted.length) - 1);
+    const histRet = sorted[idx];
+    // Conditional VaR = average loss beyond the VaR threshold.
+    const tail = sorted.slice(0, Math.max(idx + 1, 1));
+    const cvarRet = mean(tail);
+
+    // --- 2. Parametric: normal assumption, z-score from confidence ---
+    // Inverse normal CDF (Acklam's rational approximation).
+    const invNorm = (p) => {
+      const a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02, 1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00];
+      const b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02, 6.680131188771972e+01, -1.328068155288572e+01];
+      const c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00, -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00];
+      const d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00, 3.754408661907416e+00];
+      const pl = 0.02425;
+      if (p < pl) { const q = Math.sqrt(-2 * Math.log(p)); return (((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) / ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1); }
+      if (p > 1 - pl) { const q = Math.sqrt(-2 * Math.log(1 - p)); return -(((((c[0]*q+c[1])*q+c[2])*q+c[3])*q+c[4])*q+c[5]) / ((((d[0]*q+d[1])*q+d[2])*q+d[3])*q+1); }
+      const q = p - 0.5, r = q * q;
+      return (((((a[0]*r+a[1])*r+a[2])*r+a[3])*r+a[4])*r+a[5])*q / (((((b[0]*r+b[1])*r+b[2])*r+b[3])*r+b[4])*r+1);
+    };
+    const z = invNorm(alpha);
+    const paramRet = mu + z * sigma;
+
+    // --- 3. Monte Carlo: normal draws calibrated to observed mu/sigma ---
+    const SIMS = 10000;
+    const sims = [];
+    for (let i = 0; i < SIMS; i++) {
+      // Box-Muller
+      const u1 = Math.random() || 1e-9, u2 = Math.random();
+      const zz = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      sims.push(mu + sigma * zz);
+    }
+    sims.sort((a, b) => a - b);
+    const mcRet = sims[Math.max(0, Math.floor(alpha * SIMS) - 1)];
+
+    const toMoney = (r) => +(Math.abs(r) * scale * totalValue).toFixed(2);
+    const toPct = (r) => +(Math.abs(r) * scale * 100).toFixed(2);
+
+    const historical = toMoney(histRet), parametric = toMoney(paramRet), monteCarlo = toMoney(mcRet);
+
+    // Historical VaR exceeding parametric is the signature of fat tails:
+    // realised losses are worse than a normal distribution predicts.
+    const fatTails = historical > parametric * 1.05;
+
+    const result = {
+      available: true,
+      symbols: valid, portfolioValue: +totalValue.toFixed(2),
+      confidence, horizon, observations: portfolio.length,
+      var: {
+        historical: { amount: historical, percent: toPct(histRet) },
+        parametric: { amount: parametric, percent: toPct(paramRet) },
+        monteCarlo: { amount: monteCarlo, percent: toPct(mcRet) },
+      },
+      cvar: { amount: toMoney(cvarRet), percent: toPct(cvarRet) },
+      dailyVolatility: +(sigma * 100).toFixed(2),
+      annualisedVolatility: +(sigma * Math.sqrt(252) * 100).toFixed(2),
+      fatTails,
+      worstDay: +(sorted[0] * 100).toFixed(2),
+      bestDay: +(sorted[sorted.length - 1] * 100).toFixed(2),
+    };
+
+    cacheSet(cacheKey, result, 900000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/analytics/stress?symbols=..&values=..
+// Beta-adjusted scenario analysis against historical crisis drawdowns.
+// ---------------------------------------------------------------------------
+const STRESS_SCENARIOS = [
+  { id: 'gfc2008', name: '2008 Financial Crisis', marketShock: -46.0, note: 'S&P 500 peak-to-trough, Sep 2008 – Mar 2009' },
+  { id: 'covid2020', name: 'COVID Crash 2020', marketShock: -33.9, note: 'S&P 500, 19 Feb – 23 Mar 2020' },
+  { id: 'rates2022', name: '2022 Rate Shock', marketShock: -25.4, note: 'S&P 500, Jan – Oct 2022' },
+  { id: 'dotcom2000', name: 'Dot-com Bust', marketShock: -49.1, note: 'S&P 500, Mar 2000 – Oct 2002' },
+  { id: 'blackmonday', name: 'Black Monday', marketShock: -20.5, note: 'S&P 500, single day, 19 Oct 1987' },
+  { id: 'correction10', name: 'Standard Correction', marketShock: -10.0, note: 'Textbook 10% market correction' },
+];
+
+app.get('/api/v1/analytics/stress', async (req, res) => {
+  try {
+    const symbols = (req.query.symbols || '').split(',').map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 15);
+    const values = (req.query.values || '').split(',').map(v => parseFloat(v) || 0);
+    if (symbols.length < 1) return res.json({ available: false, message: 'No positions' });
+
+    const cacheKey = `stress:${symbols.join(',')}:${values.join(',')}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const [built, spyCandles] = await Promise.all([
+      buildPortfolioReturns(symbols, values),
+      yahooCandles('SPY', '1d', '2y').catch(() => []),
+    ]);
+    if (!built || spyCandles.length < 30) {
+      return res.json({ available: false, message: 'Insufficient price history' });
+    }
+
+    const spyRets = [];
+    for (let i = 1; i < spyCandles.length; i++) {
+      if (spyCandles[i].close && spyCandles[i - 1].close) {
+        spyRets.push((spyCandles[i].close - spyCandles[i - 1].close) / spyCandles[i - 1].close);
+      }
+    }
+
+    // Per-holding beta vs SPY drives how hard each position is shocked.
+    const { valid, seriesBySymbol, totalValue } = built;
+    const betaOf = (sym) => {
+      const arr = seriesBySymbol[sym];
+      const n = Math.min(arr.length, spyRets.length);
+      const a = arr.slice(-n), b = spyRets.slice(-n);
+      const ma = mean(a), mb = mean(b);
+      let cov = 0, varb = 0;
+      for (let i = 0; i < n; i++) { cov += (a[i] - ma) * (b[i] - mb); varb += (b[i] - mb) ** 2; }
+      return varb ? cov / varb : 1;
+    };
+
+    const holdings = valid.map(s => {
+      const value = values[symbols.indexOf(s)] || 0;
+      return { symbol: s, value, beta: +betaOf(s).toFixed(2) };
+    });
+
+    const portfolioBeta = totalValue
+      ? +(holdings.reduce((s, h) => s + h.beta * (h.value / totalValue), 0)).toFixed(2)
+      : 1;
+
+    const scenarios = STRESS_SCENARIOS.map(sc => {
+      const impacts = holdings.map(h => {
+        const shockPct = h.beta * sc.marketShock;
+        return { symbol: h.symbol, beta: h.beta, shockPercent: +shockPct.toFixed(2), pnl: +(h.value * shockPct / 100).toFixed(2) };
+      });
+      const totalPnl = impacts.reduce((s, i) => s + i.pnl, 0);
+      return {
+        ...sc,
+        portfolioShockPercent: totalValue ? +((totalPnl / totalValue) * 100).toFixed(2) : 0,
+        pnl: +totalPnl.toFixed(2),
+        endValue: +(totalValue + totalPnl).toFixed(2),
+        worstHolding: impacts.slice().sort((a, b) => a.pnl - b.pnl)[0] || null,
+        impacts,
+      };
+    });
+
+    const result = {
+      available: true,
+      portfolioValue: +totalValue.toFixed(2),
+      portfolioBeta,
+      holdings,
+      scenarios,
+      // Beta is estimated from ~2y of daily data and is itself unstable in a
+      // crisis (correlations converge to 1), so this understates tail risk.
+      methodology: 'Beta-adjusted shock propagation vs SPY, betas from 2y daily returns.',
+    };
+
+    cacheSet(cacheKey, result, 900000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/v1/yieldcurve — US Treasury curve now vs 1M / 1Y ago, with
 // inversion detection. All tenors come from FRED.
 // ---------------------------------------------------------------------------
@@ -2021,20 +2260,75 @@ app.get('/api/v1/options', async (req, res) => {
       return res.json(empty);
     }
 
-    const mapContract = c => ({
-      strike: c.strike, lastPrice: c.lastPrice, bid: c.bid, ask: c.ask,
-      change: c.change, percentChange: c.percentChange, volume: c.volume || 0,
-      openInterest: c.openInterest || 0, impliedVolatility: c.impliedVolatility,
-      inTheMoney: c.inTheMoney, expiration: c.expiration,
-      contractSymbol: c.contractSymbol,
-    });
+    const spot = chain.quote?.regularMarketPrice || null;
+    // Short-rate proxy for discounting; falls back if FRED is unavailable.
+    const riskFree = await (async () => {
+      try {
+        const obs = await fredFetch('DGS3MO', { limit: 5 });
+        const v = (obs || []).find(o => o.value !== '.');
+        return v ? parseFloat(v.value) / 100 : 0.045;
+      } catch { return 0.045; }
+    })();
+
+    const mapContract = (type) => (c) => {
+      const base = {
+        strike: c.strike, lastPrice: c.lastPrice, bid: c.bid, ask: c.ask,
+        change: c.change, percentChange: c.percentChange, volume: c.volume || 0,
+        openInterest: c.openInterest || 0, impliedVolatility: c.impliedVolatility,
+        inTheMoney: c.inTheMoney, expiration: c.expiration,
+        contractSymbol: c.contractSymbol,
+      };
+      if (spot == null || !c.expiration || !c.strike) return base;
+
+      const T = yearsToExpiry(c.expiration);
+      // Prefer a mid-market price for solving IV; fall back to last traded.
+      const mid = (c.bid != null && c.ask != null && c.bid > 0 && c.ask > 0)
+        ? (c.bid + c.ask) / 2 : c.lastPrice;
+      // Trust our own solve over the feed's IV so Greeks stay self-consistent.
+      const iv = (mid > 0 ? impliedVol(type, mid, spot, c.strike, T, riskFree) : null)
+        ?? c.impliedVolatility ?? null;
+
+      return {
+        ...base,
+        computedIV: iv != null ? +iv.toFixed(4) : null,
+        greeks: iv ? bsGreeks(type, spot, c.strike, T, riskFree, iv) : null,
+      };
+    };
+
+    const calls = (chain.options?.[0]?.calls || []).map(mapContract('call'));
+    const puts = (chain.options?.[0]?.puts || []).map(mapContract('put'));
+
+    // Options-flow sentiment (Phase 3.5).
+    const sum = (arr, k) => arr.reduce((s, c) => s + (c[k] || 0), 0);
+    const callVol = sum(calls, 'volume'), putVol = sum(puts, 'volume');
+    const callOI = sum(calls, 'openInterest'), putOI = sum(puts, 'openInterest');
+
+    // Max pain: the strike where total option holder value is lowest.
+    let maxPain = null;
+    if (calls.length && puts.length) {
+      const strikes = [...new Set([...calls, ...puts].map(c => c.strike))].sort((a, b) => a - b);
+      let best = null;
+      for (const K of strikes) {
+        const callLoss = calls.reduce((s, c) => s + Math.max(K - c.strike, 0) * (c.openInterest || 0), 0);
+        const putLoss = puts.reduce((s, p) => s + Math.max(p.strike - K, 0) * (p.openInterest || 0), 0);
+        const total = callLoss + putLoss;
+        if (best == null || total < best.total) best = { strike: K, total };
+      }
+      maxPain = best?.strike ?? null;
+    }
 
     const result = {
       symbol,
       expirationDates: chain.expirations || [],
-      currentPrice: chain.quote?.regularMarketPrice || null,
-      calls: (chain.options?.[0]?.calls || []).map(mapContract),
-      puts: (chain.options?.[0]?.puts || []).map(mapContract),
+      currentPrice: spot,
+      riskFreeRate: +(riskFree * 100).toFixed(2),
+      calls, puts,
+      sentiment: {
+        putCallVolumeRatio: callVol ? +(putVol / callVol).toFixed(3) : null,
+        putCallOIRatio: callOI ? +(putOI / callOI).toFixed(3) : null,
+        totalCallVolume: callVol, totalPutVolume: putVol,
+        maxPain,
+      },
     };
 
     cacheSet(cacheKey, result, 120000);

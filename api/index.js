@@ -455,6 +455,84 @@ var SYMBOL_SECTOR = (() => {
   return map;
 })();
 
+// blackscholes.js
+function normPdf(x) {
+  return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+}
+function normCdf(x) {
+  const sign = x < 0 ? -1 : 1;
+  const z = Math.abs(x) / Math.SQRT2;
+  const t = 1 / (1 + 0.3275911 * z);
+  const y = 1 - ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-z * z);
+  return 0.5 * (1 + sign * y);
+}
+function d1d2(S, K, T, r, sigma, q = 0) {
+  const vt = sigma * Math.sqrt(T);
+  const d1 = (Math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / vt;
+  return { d1, d2: d1 - vt, vt };
+}
+function bsPrice(type, S, K, T, r, sigma, q = 0) {
+  if (T <= 0 || sigma <= 0 || S <= 0 || K <= 0) {
+    const intrinsic = type === "call" ? Math.max(S - K, 0) : Math.max(K - S, 0);
+    return intrinsic;
+  }
+  const { d1, d2 } = d1d2(S, K, T, r, sigma, q);
+  const dfR = Math.exp(-r * T), dfQ = Math.exp(-q * T);
+  return type === "call" ? S * dfQ * normCdf(d1) - K * dfR * normCdf(d2) : K * dfR * normCdf(-d2) - S * dfQ * normCdf(-d1);
+}
+function greeks(type, S, K, T, r, sigma, q = 0) {
+  if (T <= 0 || sigma <= 0 || S <= 0 || K <= 0) {
+    return { delta: null, gamma: null, vega: null, theta: null, rho: null };
+  }
+  const { d1, d2 } = d1d2(S, K, T, r, sigma, q);
+  const dfR = Math.exp(-r * T), dfQ = Math.exp(-q * T);
+  const pdf = normPdf(d1);
+  const sqrtT = Math.sqrt(T);
+  const delta = type === "call" ? dfQ * normCdf(d1) : dfQ * (normCdf(d1) - 1);
+  const gamma = dfQ * pdf / (S * sigma * sqrtT);
+  const vega = S * dfQ * pdf * sqrtT / 100;
+  const termA = -(S * dfQ * pdf * sigma) / (2 * sqrtT);
+  const thetaAnnual = type === "call" ? termA - r * K * dfR * normCdf(d2) + q * S * dfQ * normCdf(d1) : termA + r * K * dfR * normCdf(-d2) - q * S * dfQ * normCdf(-d1);
+  const theta = thetaAnnual / 365;
+  const rho = (type === "call" ? K * T * dfR * normCdf(d2) : -K * T * dfR * normCdf(-d2)) / 100;
+  return {
+    delta: +delta.toFixed(4),
+    gamma: +gamma.toFixed(6),
+    vega: +vega.toFixed(4),
+    theta: +theta.toFixed(4),
+    rho: +rho.toFixed(4)
+  };
+}
+function impliedVol(type, marketPrice, S, K, T, r, q = 0) {
+  if (T <= 0 || marketPrice <= 0 || S <= 0 || K <= 0) return null;
+  const intrinsic = type === "call" ? Math.max(S - K, 0) : Math.max(K - S, 0);
+  if (marketPrice < intrinsic - 1e-6) return null;
+  let sigma = 0.25;
+  for (let i = 0; i < 50; i++) {
+    const price = bsPrice(type, S, K, T, r, sigma, q);
+    const diff = price - marketPrice;
+    if (Math.abs(diff) < 1e-6) return +sigma.toFixed(6);
+    const v = greeks(type, S, K, T, r, sigma, q).vega * 100;
+    if (!v || !isFinite(v) || v < 1e-8) break;
+    const next = sigma - diff / v;
+    if (!isFinite(next) || next <= 0 || next > 10) break;
+    sigma = next;
+  }
+  let lo = 1e-4, hi = 10;
+  if (bsPrice(type, S, K, T, r, hi, q) < marketPrice) return null;
+  for (let i = 0; i < 200; i++) {
+    const mid = (lo + hi) / 2;
+    if (bsPrice(type, S, K, T, r, mid, q) < marketPrice) lo = mid;
+    else hi = mid;
+    if (hi - lo < 1e-7) break;
+  }
+  const out = (lo + hi) / 2;
+  return out > 9.99 ? null : +out.toFixed(6);
+}
+function yearsToExpiry(expirySeconds, nowMs = Date.now()) {
+  return Math.max((expirySeconds * 1e3 - nowMs) / (365 * 24 * 3600 * 1e3), 0);
+}
+
 // server.js
 dotenv.config();
 var app = express();
@@ -648,10 +726,10 @@ function macd(closes, fast = 12, slow = 26, signal = 9) {
 function bollinger(closes, period = 20, mult = 2) {
   if (closes.length < period) return null;
   const slice = closes.slice(-period);
-  const mean = slice.reduce((a, b) => a + b, 0) / period;
-  const variance = slice.reduce((a, b) => a + (b - mean) ** 2, 0) / period;
+  const mean2 = slice.reduce((a, b) => a + b, 0) / period;
+  const variance = slice.reduce((a, b) => a + (b - mean2) ** 2, 0) / period;
   const sd = Math.sqrt(variance);
-  return { middle: mean, upper: mean + mult * sd, lower: mean - mult * sd, bandwidth: 2 * mult * sd / mean * 100 };
+  return { middle: mean2, upper: mean2 + mult * sd, lower: mean2 - mult * sd, bandwidth: 2 * mult * sd / mean2 * 100 };
 }
 function stochastic(highs, lows, closes, period = 14, smooth = 3) {
   if (closes.length < period + smooth) return null;
@@ -901,7 +979,11 @@ app.get("/api/v1/candles", async (req, res) => {
       "1h": { interval: "60m", range: "1mo", ttl: 12e3 },
       "1D": { interval: "1d", range: "6mo", ttl: 55e3 },
       "1W": { interval: "1wk", range: "2y", ttl: 55e3 },
-      "1M": { interval: "1mo", range: "5y", ttl: 55e3 }
+      "1M": { interval: "1mo", range: "5y", ttl: 55e3 },
+      // Longer horizons: daily bars over a year reads well, weekly over
+      // five years keeps the series a sane length.
+      "1Y": { interval: "1d", range: "1y", ttl: 55e3 },
+      "5Y": { interval: "1wk", range: "5y", ttl: 3e5 }
     };
     const config = resolutionMap[resolution] || resolutionMap["15m"];
     const candles = await yahooCandles(symbol, config.interval, range !== "1d" ? range : config.range);
@@ -1644,9 +1726,9 @@ app.get("/api/v1/analytics/correlation", async (req, res) => {
     }
     const len = Math.min(...valid.map((s) => returnsBySymbol[s].length));
     const series = valid.map((s) => returnsBySymbol[s].slice(-len));
-    const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+    const mean2 = (a) => a.reduce((x, y) => x + y, 0) / a.length;
     const corr = (a, b) => {
-      const ma = mean(a), mb = mean(b);
+      const ma = mean2(a), mb = mean2(b);
       let num = 0, da = 0, db = 0;
       for (let i = 0; i < a.length; i++) {
         const x = a[i] - ma, y = b[i] - mb;
@@ -1680,6 +1762,199 @@ app.get("/api/v1/analytics/correlation", async (req, res) => {
       // Naive diversification read: high average correlation means the book
       // moves as one position regardless of how many tickers it holds.
       diversification: avg > 0.7 ? "Poor" : avg > 0.4 ? "Moderate" : "Good"
+    };
+    cacheSet(cacheKey, result, 9e5);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+async function buildPortfolioReturns(symbols, values, range = "2y") {
+  const settled = await Promise.allSettled(symbols.map((s) => yahooCandles(s, "1d", range)));
+  const seriesBySymbol = {};
+  settled.forEach((r, i) => {
+    if (r.status !== "fulfilled" || r.value.length < 30) return;
+    const closes = r.value.map((c) => c.close);
+    const rets = [];
+    for (let j = 1; j < closes.length; j++) {
+      if (closes[j] && closes[j - 1]) rets.push((closes[j] - closes[j - 1]) / closes[j - 1]);
+    }
+    seriesBySymbol[symbols[i]] = rets;
+  });
+  const valid = symbols.filter((s) => seriesBySymbol[s]);
+  if (!valid.length) return null;
+  const totalValue = valid.reduce((s, sym) => s + (values[symbols.indexOf(sym)] || 0), 0);
+  if (totalValue <= 0) return null;
+  const len = Math.min(...valid.map((s) => seriesBySymbol[s].length));
+  const weights = valid.map((s) => (values[symbols.indexOf(s)] || 0) / totalValue);
+  const portfolio = [];
+  for (let t = 0; t < len; t++) {
+    let r = 0;
+    valid.forEach((s, i) => {
+      const arr = seriesBySymbol[s];
+      r += arr[arr.length - len + t] * weights[i];
+    });
+    portfolio.push(r);
+  }
+  return { portfolio, valid, weights, totalValue, seriesBySymbol, len };
+}
+var mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+var stdev = (a) => {
+  const m = mean(a);
+  return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / (a.length - 1 || 1));
+};
+app.get("/api/v1/analytics/var", async (req, res) => {
+  try {
+    const symbols = (req.query.symbols || "").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 15);
+    const values = (req.query.values || "").split(",").map((v) => parseFloat(v) || 0);
+    const confidence = Math.min(Math.max(parseFloat(req.query.confidence) || 95, 50), 99.9);
+    const horizon = Math.min(Math.max(parseInt(req.query.horizon) || 1, 1), 30);
+    if (symbols.length < 1) return res.json({ available: false, message: "No positions" });
+    const cacheKey = `var:${symbols.join(",")}:${values.join(",")}:${confidence}:${horizon}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+    const built = await buildPortfolioReturns(symbols, values);
+    if (!built || built.portfolio.length < 30) {
+      return res.json({ available: false, message: "Insufficient price history" });
+    }
+    const { portfolio, totalValue, valid } = built;
+    const alpha = 1 - confidence / 100;
+    const scale = Math.sqrt(horizon);
+    const mu = mean(portfolio);
+    const sigma = stdev(portfolio);
+    const sorted = [...portfolio].sort((a, b) => a - b);
+    const idx = Math.max(0, Math.floor(alpha * sorted.length) - 1);
+    const histRet = sorted[idx];
+    const tail = sorted.slice(0, Math.max(idx + 1, 1));
+    const cvarRet = mean(tail);
+    const invNorm = (p) => {
+      const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687, 138.357751867269, -30.66479806614716, 2.506628277459239];
+      const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866, 66.80131188771972, -13.28068155288572];
+      const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
+      const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996, 3.754408661907416];
+      const pl = 0.02425;
+      if (p < pl) {
+        const q2 = Math.sqrt(-2 * Math.log(p));
+        return (((((c[0] * q2 + c[1]) * q2 + c[2]) * q2 + c[3]) * q2 + c[4]) * q2 + c[5]) / ((((d[0] * q2 + d[1]) * q2 + d[2]) * q2 + d[3]) * q2 + 1);
+      }
+      if (p > 1 - pl) {
+        const q2 = Math.sqrt(-2 * Math.log(1 - p));
+        return -(((((c[0] * q2 + c[1]) * q2 + c[2]) * q2 + c[3]) * q2 + c[4]) * q2 + c[5]) / ((((d[0] * q2 + d[1]) * q2 + d[2]) * q2 + d[3]) * q2 + 1);
+      }
+      const q = p - 0.5, r = q * q;
+      return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+    };
+    const z = invNorm(alpha);
+    const paramRet = mu + z * sigma;
+    const SIMS = 1e4;
+    const sims = [];
+    for (let i = 0; i < SIMS; i++) {
+      const u1 = Math.random() || 1e-9, u2 = Math.random();
+      const zz = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      sims.push(mu + sigma * zz);
+    }
+    sims.sort((a, b) => a - b);
+    const mcRet = sims[Math.max(0, Math.floor(alpha * SIMS) - 1)];
+    const toMoney = (r) => +(Math.abs(r) * scale * totalValue).toFixed(2);
+    const toPct = (r) => +(Math.abs(r) * scale * 100).toFixed(2);
+    const historical = toMoney(histRet), parametric = toMoney(paramRet), monteCarlo = toMoney(mcRet);
+    const fatTails = historical > parametric * 1.05;
+    const result = {
+      available: true,
+      symbols: valid,
+      portfolioValue: +totalValue.toFixed(2),
+      confidence,
+      horizon,
+      observations: portfolio.length,
+      var: {
+        historical: { amount: historical, percent: toPct(histRet) },
+        parametric: { amount: parametric, percent: toPct(paramRet) },
+        monteCarlo: { amount: monteCarlo, percent: toPct(mcRet) }
+      },
+      cvar: { amount: toMoney(cvarRet), percent: toPct(cvarRet) },
+      dailyVolatility: +(sigma * 100).toFixed(2),
+      annualisedVolatility: +(sigma * Math.sqrt(252) * 100).toFixed(2),
+      fatTails,
+      worstDay: +(sorted[0] * 100).toFixed(2),
+      bestDay: +(sorted[sorted.length - 1] * 100).toFixed(2)
+    };
+    cacheSet(cacheKey, result, 9e5);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+var STRESS_SCENARIOS = [
+  { id: "gfc2008", name: "2008 Financial Crisis", marketShock: -46, note: "S&P 500 peak-to-trough, Sep 2008 \u2013 Mar 2009" },
+  { id: "covid2020", name: "COVID Crash 2020", marketShock: -33.9, note: "S&P 500, 19 Feb \u2013 23 Mar 2020" },
+  { id: "rates2022", name: "2022 Rate Shock", marketShock: -25.4, note: "S&P 500, Jan \u2013 Oct 2022" },
+  { id: "dotcom2000", name: "Dot-com Bust", marketShock: -49.1, note: "S&P 500, Mar 2000 \u2013 Oct 2002" },
+  { id: "blackmonday", name: "Black Monday", marketShock: -20.5, note: "S&P 500, single day, 19 Oct 1987" },
+  { id: "correction10", name: "Standard Correction", marketShock: -10, note: "Textbook 10% market correction" }
+];
+app.get("/api/v1/analytics/stress", async (req, res) => {
+  try {
+    const symbols = (req.query.symbols || "").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 15);
+    const values = (req.query.values || "").split(",").map((v) => parseFloat(v) || 0);
+    if (symbols.length < 1) return res.json({ available: false, message: "No positions" });
+    const cacheKey = `stress:${symbols.join(",")}:${values.join(",")}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+    const [built, spyCandles] = await Promise.all([
+      buildPortfolioReturns(symbols, values),
+      yahooCandles("SPY", "1d", "2y").catch(() => [])
+    ]);
+    if (!built || spyCandles.length < 30) {
+      return res.json({ available: false, message: "Insufficient price history" });
+    }
+    const spyRets = [];
+    for (let i = 1; i < spyCandles.length; i++) {
+      if (spyCandles[i].close && spyCandles[i - 1].close) {
+        spyRets.push((spyCandles[i].close - spyCandles[i - 1].close) / spyCandles[i - 1].close);
+      }
+    }
+    const { valid, seriesBySymbol, totalValue } = built;
+    const betaOf = (sym) => {
+      const arr = seriesBySymbol[sym];
+      const n = Math.min(arr.length, spyRets.length);
+      const a = arr.slice(-n), b = spyRets.slice(-n);
+      const ma = mean(a), mb = mean(b);
+      let cov = 0, varb = 0;
+      for (let i = 0; i < n; i++) {
+        cov += (a[i] - ma) * (b[i] - mb);
+        varb += (b[i] - mb) ** 2;
+      }
+      return varb ? cov / varb : 1;
+    };
+    const holdings = valid.map((s) => {
+      const value = values[symbols.indexOf(s)] || 0;
+      return { symbol: s, value, beta: +betaOf(s).toFixed(2) };
+    });
+    const portfolioBeta = totalValue ? +holdings.reduce((s, h) => s + h.beta * (h.value / totalValue), 0).toFixed(2) : 1;
+    const scenarios = STRESS_SCENARIOS.map((sc) => {
+      const impacts = holdings.map((h) => {
+        const shockPct = h.beta * sc.marketShock;
+        return { symbol: h.symbol, beta: h.beta, shockPercent: +shockPct.toFixed(2), pnl: +(h.value * shockPct / 100).toFixed(2) };
+      });
+      const totalPnl = impacts.reduce((s, i) => s + i.pnl, 0);
+      return {
+        ...sc,
+        portfolioShockPercent: totalValue ? +(totalPnl / totalValue * 100).toFixed(2) : 0,
+        pnl: +totalPnl.toFixed(2),
+        endValue: +(totalValue + totalPnl).toFixed(2),
+        worstHolding: impacts.slice().sort((a, b) => a.pnl - b.pnl)[0] || null,
+        impacts
+      };
+    });
+    const result = {
+      available: true,
+      portfolioValue: +totalValue.toFixed(2),
+      portfolioBeta,
+      holdings,
+      scenarios,
+      // Beta is estimated from ~2y of daily data and is itself unstable in a
+      // crisis (correlations converge to 1), so this understates tail risk.
+      methodology: "Beta-adjusted shock propagation vs SPY, betas from 2y daily returns."
     };
     cacheSet(cacheKey, result, 9e5);
     res.json(result);
@@ -1894,10 +2169,10 @@ app.get("/api/v1/technical", async (req, res) => {
       const period = 20;
       if (closes.length < period) return null;
       const tp = candles.slice(-period).map((c) => (c.high + c.low + c.close) / 3);
-      const mean = tp.reduce((a, b) => a + b, 0) / period;
-      const meanDev = tp.reduce((a, b) => a + Math.abs(b - mean), 0) / period;
+      const mean2 = tp.reduce((a, b) => a + b, 0) / period;
+      const meanDev = tp.reduce((a, b) => a + Math.abs(b - mean2), 0) / period;
       const currentTP = tp[tp.length - 1];
-      return meanDev ? (currentTP - mean) / (0.015 * meanDev) : 0;
+      return meanDev ? (currentTP - mean2) / (0.015 * meanDev) : 0;
     })();
     const williamsR = (() => {
       const period = 14;
@@ -2070,9 +2345,9 @@ app.get("/api/v1/risk", async (req, res) => {
       return returns;
     };
     const spyReturns = calcReturns(spyCandles);
-    const mean = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+    const mean2 = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
     const stdDev = (arr) => {
-      const m = mean(arr);
+      const m = mean2(arr);
       return Math.sqrt(arr.reduce((s, v) => s + (v - m) ** 2, 0) / arr.length);
     };
     let portfolioReturns = new Array(spyReturns.length).fill(0);
@@ -2084,12 +2359,12 @@ app.get("/api/v1/risk", async (req, res) => {
       const minLen = Math.min(returns.length, spyReturns.length);
       for (let i = 0; i < minLen; i++) portfolioReturns[i] += returns[i] * weight;
       const covariance = (() => {
-        const mr = mean(returns.slice(0, minLen));
-        const ms = mean(spyReturns.slice(0, minLen));
+        const mr = mean2(returns.slice(0, minLen));
+        const ms = mean2(spyReturns.slice(0, minLen));
         return returns.slice(0, minLen).reduce((s, v, i) => s + (v - mr) * (spyReturns[i] - ms), 0) / minLen;
       })();
       const spyVar = (() => {
-        const m = mean(spyReturns.slice(0, minLen));
+        const m = mean2(spyReturns.slice(0, minLen));
         return spyReturns.slice(0, minLen).reduce((s, v) => s + (v - m) ** 2, 0) / minLen;
       })();
       const beta = spyVar ? covariance / spyVar : 1;
@@ -2097,7 +2372,7 @@ app.get("/api/v1/risk", async (req, res) => {
     }
     portfolioReturns = portfolioReturns.filter((r) => r !== 0);
     const portVol = stdDev(portfolioReturns) * Math.sqrt(252) * 100;
-    const portReturn = mean(portfolioReturns) * 252 * 100;
+    const portReturn = mean2(portfolioReturns) * 252 * 100;
     const sharpe = portVol ? (portReturn - 4.5) / portVol : 0;
     let maxDD = 0, peak = 1;
     let cumulative = 1;
@@ -2151,26 +2426,72 @@ app.get("/api/v1/options", async (req, res) => {
       cacheSet(cacheKey, empty, 6e4);
       return res.json(empty);
     }
-    const mapContract = (c) => ({
-      strike: c.strike,
-      lastPrice: c.lastPrice,
-      bid: c.bid,
-      ask: c.ask,
-      change: c.change,
-      percentChange: c.percentChange,
-      volume: c.volume || 0,
-      openInterest: c.openInterest || 0,
-      impliedVolatility: c.impliedVolatility,
-      inTheMoney: c.inTheMoney,
-      expiration: c.expiration,
-      contractSymbol: c.contractSymbol
-    });
+    const spot = chain.quote?.regularMarketPrice || null;
+    const riskFree = await (async () => {
+      try {
+        const obs = await fredFetch("DGS3MO", { limit: 5 });
+        const v = (obs || []).find((o) => o.value !== ".");
+        return v ? parseFloat(v.value) / 100 : 0.045;
+      } catch {
+        return 0.045;
+      }
+    })();
+    const mapContract = (type) => (c) => {
+      const base = {
+        strike: c.strike,
+        lastPrice: c.lastPrice,
+        bid: c.bid,
+        ask: c.ask,
+        change: c.change,
+        percentChange: c.percentChange,
+        volume: c.volume || 0,
+        openInterest: c.openInterest || 0,
+        impliedVolatility: c.impliedVolatility,
+        inTheMoney: c.inTheMoney,
+        expiration: c.expiration,
+        contractSymbol: c.contractSymbol
+      };
+      if (spot == null || !c.expiration || !c.strike) return base;
+      const T = yearsToExpiry(c.expiration);
+      const mid = c.bid != null && c.ask != null && c.bid > 0 && c.ask > 0 ? (c.bid + c.ask) / 2 : c.lastPrice;
+      const iv = (mid > 0 ? impliedVol(type, mid, spot, c.strike, T, riskFree) : null) ?? c.impliedVolatility ?? null;
+      return {
+        ...base,
+        computedIV: iv != null ? +iv.toFixed(4) : null,
+        greeks: iv ? greeks(type, spot, c.strike, T, riskFree, iv) : null
+      };
+    };
+    const calls = (chain.options?.[0]?.calls || []).map(mapContract("call"));
+    const puts = (chain.options?.[0]?.puts || []).map(mapContract("put"));
+    const sum = (arr, k) => arr.reduce((s, c) => s + (c[k] || 0), 0);
+    const callVol = sum(calls, "volume"), putVol = sum(puts, "volume");
+    const callOI = sum(calls, "openInterest"), putOI = sum(puts, "openInterest");
+    let maxPain = null;
+    if (calls.length && puts.length) {
+      const strikes = [...new Set([...calls, ...puts].map((c) => c.strike))].sort((a, b) => a - b);
+      let best = null;
+      for (const K of strikes) {
+        const callLoss = calls.reduce((s, c) => s + Math.max(K - c.strike, 0) * (c.openInterest || 0), 0);
+        const putLoss = puts.reduce((s, p) => s + Math.max(p.strike - K, 0) * (p.openInterest || 0), 0);
+        const total = callLoss + putLoss;
+        if (best == null || total < best.total) best = { strike: K, total };
+      }
+      maxPain = best?.strike ?? null;
+    }
     const result = {
       symbol,
       expirationDates: chain.expirations || [],
-      currentPrice: chain.quote?.regularMarketPrice || null,
-      calls: (chain.options?.[0]?.calls || []).map(mapContract),
-      puts: (chain.options?.[0]?.puts || []).map(mapContract)
+      currentPrice: spot,
+      riskFreeRate: +(riskFree * 100).toFixed(2),
+      calls,
+      puts,
+      sentiment: {
+        putCallVolumeRatio: callVol ? +(putVol / callVol).toFixed(3) : null,
+        putCallOIRatio: callOI ? +(putOI / callOI).toFixed(3) : null,
+        totalCallVolume: callVol,
+        totalPutVolume: putVol,
+        maxPain
+      }
     };
     cacheSet(cacheKey, result, 12e4);
     res.json(result);

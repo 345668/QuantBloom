@@ -5,7 +5,7 @@ import { usePolling } from '../hooks/usePolling.js';
 import { formatPrice, formatPct, formatVolume } from '../utils/format.js';
 import ChartDrawings, { TOOLS } from './ChartDrawings.jsx';
 
-const TIMEFRAMES = ['1m', '5m', '15m', '1h', '1D', '1W', '1M'];
+const TIMEFRAMES = ['1m', '5m', '15m', '1h', '1D', '1W', '1M', '1Y', '5Y'];
 const OVERLAYS = ['MA', 'BB', 'RSI', 'MACD'];
 
 function computeMA(candles, period = 20) {
