@@ -37,6 +37,7 @@ import DCFPanel from './components/DCFPanel.jsx';
 import StressTestPanel from './components/StressTestPanel.jsx';
 import StrategyBuilder from './components/StrategyBuilder.jsx';
 import BotPanel from './components/BotPanel.jsx';
+import BacktestPanel from './components/BacktestPanel.jsx';
 
 function Dashboard() {
   const { state, dispatch } = useDashboard();
@@ -87,11 +88,18 @@ function Dashboard() {
         </div>
       </div>
 
-      {/* Row 2: Bot + Markets board + Compare */}
+      {/* Row 2: Bot + Backtest + Markets board */}
       <div className="dashboard-row row-3col">
         <BotPanel />
+        <BacktestPanel />
         <MarketsPanel />
+      </div>
+
+      {/* Row 2a: Compare */}
+      <div className="dashboard-row row-3col">
         <ComparePanel />
+        <PortfolioPanel />
+        <AttributionPanel />
       </div>
 
       {/* Row 2b: Indices */}
@@ -124,8 +132,7 @@ function Dashboard() {
       </div>
 
       {/* Row 5: Portfolio + Risk + Correlation + Alerts */}
-      <div className="dashboard-row row-4col">
-        <PortfolioPanel />
+      <div className="dashboard-row row-3col">
         <RiskPanel />
         <CorrelationPanel />
         <AlertsPanel />
@@ -147,8 +154,7 @@ function Dashboard() {
       </div>
 
       {/* Row 8: Attribution + Optimiser + DCF */}
-      <div className="dashboard-row row-3col">
-        <AttributionPanel />
+      <div className="dashboard-row row-2col">
         <OptimizerPanel />
         <DCFPanel />
       </div>
