@@ -2874,6 +2874,9 @@ function unpublish(modelId) {
 }
 
 // server.js
+import { existsSync as existsSync2 } from "node:fs";
+import { dirname as dirname2, join as join2 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 dotenv.config();
 var app = express();
 var port = process.env.API_PORT || 3001;
@@ -5298,11 +5301,19 @@ app.post("/api/v1/bot/models/:id/publish", (req, res) => {
 app.post("/api/v1/bot/models/:id/unpublish", (req, res) => {
   res.json(unpublish(req.params.id));
 });
+var __dir = dirname2(fileURLToPath2(import.meta.url));
+var distDir = join2(__dir, "dist");
+if (existsSync2(join2(distDir, "index.html"))) {
+  app.use(express.static(distDir));
+  app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(join2(distDir, "index.html")));
+}
 var server_default = app;
 var isDirectRun = process.argv[1] && (process.argv[1].endsWith("server.js") || process.argv[1].endsWith("server"));
 if (isDirectRun) {
   app.listen(port, () => {
-    console.log(`QuantBloom Terminal API running on http://localhost:${port}`);
+    const served = existsSync2(join2(distDir, "index.html"));
+    console.log(`QuantBloom Terminal ${served ? "(UI + API)" : "API"} running on http://localhost:${port}`);
+    if (!served) console.log("  UI not built \u2014 run `npm run build:local`, or use `npm run dev:local` for hot reload.");
   });
 }
 

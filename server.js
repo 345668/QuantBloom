@@ -2917,6 +2917,23 @@ app.post('/api/v1/bot/models/:id/unpublish', (req, res) => {
   res.json(models.unpublish(req.params.id));
 });
 
+// ---------------------------------------------------------------------------
+// Serve the built front-end when it exists, so `node server.js` is a single
+// self-contained local server (build once, then run). In dev the Vite server
+// on 5173 handles the UI instead and proxies /api here, so this is skipped.
+// ---------------------------------------------------------------------------
+import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dir = dirname(fileURLToPath(import.meta.url));
+const distDir = join(__dir, 'dist');
+if (existsSync(join(distDir, 'index.html'))) {
+  app.use(express.static(distDir));
+  // SPA fallback: any non-API path returns index.html for client routing.
+  app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(join(distDir, 'index.html')));
+}
+
 // Export for Vercel serverless
 export default app;
 
@@ -2924,6 +2941,8 @@ export default app;
 const isDirectRun = process.argv[1] && (process.argv[1].endsWith('server.js') || process.argv[1].endsWith('server'));
 if (isDirectRun) {
   app.listen(port, () => {
-    console.log(`QuantBloom Terminal API running on http://localhost:${port}`);
+    const served = existsSync(join(distDir, 'index.html'));
+    console.log(`QuantBloom Terminal ${served ? '(UI + API)' : 'API'} running on http://localhost:${port}`);
+    if (!served) console.log('  UI not built — run `npm run build:local`, or use `npm run dev:local` for hot reload.');
   });
 }
