@@ -1646,6 +1646,667 @@ async function runCycle({ fetchTechnical, fetchNews, dryRun = false }) {
   };
 }
 
+// bot/indicators.js
+function sma(values, period) {
+  if (values.length < period) return null;
+  const slice = values.slice(-period);
+  return slice.reduce((a, b) => a + b, 0) / period;
+}
+function ema(values, period) {
+  if (values.length < period) return null;
+  const k = 2 / (period + 1);
+  let e = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < values.length; i++) e = values[i] * k + e * (1 - k);
+  return e;
+}
+function emaSeries(values, period) {
+  if (values.length < period) return [];
+  const k = 2 / (period + 1);
+  const out = [];
+  let e = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  out.push(e);
+  for (let i = period; i < values.length; i++) {
+    e = values[i] * k + e * (1 - k);
+    out.push(e);
+  }
+  return out;
+}
+function rsi(closes, period = 14) {
+  if (closes.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = closes.length - period; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) gains += diff;
+    else losses -= diff;
+  }
+  const avgGain = gains / period, avgLoss = losses / period;
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
+}
+function macd(closes, fast = 12, slow = 26, signal = 9) {
+  if (closes.length < slow + signal) return null;
+  const fastE = emaSeries(closes, fast);
+  const slowE = emaSeries(closes, slow);
+  const offset = fastE.length - slowE.length;
+  const macdLine = slowE.map((s, i) => fastE[i + offset] - s);
+  const signalLine = emaSeries(macdLine, signal);
+  const macdVal = macdLine[macdLine.length - 1];
+  const sigVal = signalLine[signalLine.length - 1];
+  return { macd: macdVal, signal: sigVal, histogram: macdVal - sigVal };
+}
+function bollinger(closes, period = 20, mult = 2) {
+  if (closes.length < period) return null;
+  const slice = closes.slice(-period);
+  const mean3 = slice.reduce((a, b) => a + b, 0) / period;
+  const variance = slice.reduce((a, b) => a + (b - mean3) ** 2, 0) / period;
+  const sd = Math.sqrt(variance);
+  return { middle: mean3, upper: mean3 + mult * sd, lower: mean3 - mult * sd, bandwidth: 2 * mult * sd / mean3 * 100 };
+}
+function stochastic(highs, lows, closes, period = 14, smooth = 3) {
+  if (closes.length < period + smooth) return null;
+  const kSeries = [];
+  for (let i = period - 1; i < closes.length; i++) {
+    const hh = Math.max(...highs.slice(i - period + 1, i + 1));
+    const ll = Math.min(...lows.slice(i - period + 1, i + 1));
+    kSeries.push(hh === ll ? 50 : (closes[i] - ll) / (hh - ll) * 100);
+  }
+  const k = kSeries[kSeries.length - 1];
+  const d = kSeries.slice(-smooth).reduce((a, b) => a + b, 0) / smooth;
+  return { k, d };
+}
+function atr(highs, lows, closes, period = 14) {
+  if (closes.length < period + 1) return null;
+  const trs = [];
+  for (let i = 1; i < closes.length; i++) {
+    trs.push(Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i - 1]),
+      Math.abs(lows[i] - closes[i - 1])
+    ));
+  }
+  return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
+}
+function adx(highs, lows, closes, period = 14) {
+  if (closes.length < period * 2) return null;
+  const plusDM = [], minusDM = [], tr = [];
+  for (let i = 1; i < closes.length; i++) {
+    const up = highs[i] - highs[i - 1];
+    const down = lows[i - 1] - lows[i];
+    plusDM.push(up > down && up > 0 ? up : 0);
+    minusDM.push(down > up && down > 0 ? down : 0);
+    tr.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
+  }
+  const smooth = (arr) => arr.slice(-period).reduce((a, b) => a + b, 0);
+  const atrSum = smooth(tr) || 1;
+  const plusDI = smooth(plusDM) / atrSum * 100;
+  const minusDI = smooth(minusDM) / atrSum * 100;
+  const dx = Math.abs(plusDI - minusDI) / (plusDI + minusDI || 1) * 100;
+  return { adx: dx, plusDI, minusDI };
+}
+function pivotPoints(high, low, close) {
+  const p = (high + low + close) / 3;
+  return {
+    pivot: p,
+    r1: 2 * p - low,
+    r2: p + (high - low),
+    r3: high + 2 * (p - low),
+    s1: 2 * p - high,
+    s2: p - (high - low),
+    s3: low - 2 * (high - p)
+  };
+}
+function computeTechnical(candles, symbol = "") {
+  if (!candles || candles.length < 30) {
+    return { symbol, available: false, message: "Insufficient price history" };
+  }
+  const closes = candles.map((c) => c.close);
+  const highs = candles.map((c) => c.high);
+  const lows = candles.map((c) => c.low);
+  const volumes = candles.map((c) => c.volume);
+  const price = closes[closes.length - 1];
+  const prevCandle = candles[candles.length - 2];
+  const ma = {
+    sma20: sma(closes, 20),
+    sma50: sma(closes, 50),
+    sma100: sma(closes, 100),
+    sma200: sma(closes, 200),
+    ema12: ema(closes, 12),
+    ema26: ema(closes, 26),
+    ema50: ema(closes, 50)
+  };
+  const rsi14 = rsi(closes, 14);
+  const macdVal = macd(closes);
+  const bb = bollinger(closes, 20, 2);
+  const stoch = stochastic(highs, lows, closes, 14, 3);
+  const atr14 = atr(highs, lows, closes, 14);
+  const adxVal = adx(highs, lows, closes, 14);
+  const cci = (() => {
+    const period = 20;
+    if (closes.length < period) return null;
+    const tp = candles.slice(-period).map((c) => (c.high + c.low + c.close) / 3);
+    const mean3 = tp.reduce((a, b) => a + b, 0) / period;
+    const meanDev = tp.reduce((a, b) => a + Math.abs(b - mean3), 0) / period;
+    const currentTP = tp[tp.length - 1];
+    return meanDev ? (currentTP - mean3) / (0.015 * meanDev) : 0;
+  })();
+  const williamsR = (() => {
+    const period = 14;
+    if (closes.length < period) return null;
+    const hh = Math.max(...highs.slice(-period));
+    const ll = Math.min(...lows.slice(-period));
+    return hh === ll ? -50 : (hh - price) / (hh - ll) * -100;
+  })();
+  const week52High = Math.max(...highs);
+  const week52Low = Math.min(...lows);
+  const rangePosition = week52High === week52Low ? 50 : (price - week52Low) / (week52High - week52Low) * 100;
+  const avgVol20 = sma(volumes, 20);
+  const volumeRatio = avgVol20 ? volumes[volumes.length - 1] / avgVol20 : null;
+  const pivots = prevCandle ? pivotPoints(prevCandle.high, prevCandle.low, prevCandle.close) : null;
+  const signals = [];
+  const vote = (name, value, signal) => signals.push({ name, value, signal });
+  if (rsi14 != null) vote("RSI (14)", +rsi14.toFixed(2), rsi14 > 70 ? "sell" : rsi14 < 30 ? "buy" : "neutral");
+  if (macdVal) vote("MACD (12,26,9)", +macdVal.histogram.toFixed(3), macdVal.histogram > 0 ? "buy" : macdVal.histogram < 0 ? "sell" : "neutral");
+  if (stoch) vote("Stochastic (14,3)", +stoch.k.toFixed(2), stoch.k > 80 ? "sell" : stoch.k < 20 ? "buy" : "neutral");
+  if (cci != null) vote("CCI (20)", +cci.toFixed(2), cci > 100 ? "sell" : cci < -100 ? "buy" : "neutral");
+  if (williamsR != null) vote("Williams %R", +williamsR.toFixed(2), williamsR > -20 ? "sell" : williamsR < -80 ? "buy" : "neutral");
+  if (adxVal) vote("ADX (14)", +adxVal.adx.toFixed(2), adxVal.adx > 25 ? adxVal.plusDI > adxVal.minusDI ? "buy" : "sell" : "neutral");
+  if (ma.sma20 != null) vote("SMA 20", +ma.sma20.toFixed(2), price > ma.sma20 ? "buy" : "sell");
+  if (ma.sma50 != null) vote("SMA 50", +ma.sma50.toFixed(2), price > ma.sma50 ? "buy" : "sell");
+  if (ma.sma200 != null) vote("SMA 200", +ma.sma200.toFixed(2), price > ma.sma200 ? "buy" : "sell");
+  if (ma.ema12 != null) vote("EMA 12", +ma.ema12.toFixed(2), price > ma.ema12 ? "buy" : "sell");
+  if (ma.ema26 != null) vote("EMA 26", +ma.ema26.toFixed(2), price > ma.ema26 ? "buy" : "sell");
+  if (bb) vote("Bollinger Bands", +bb.middle.toFixed(2), price > bb.upper ? "sell" : price < bb.lower ? "buy" : "neutral");
+  const buyCount = signals.filter((s) => s.signal === "buy").length;
+  const sellCount = signals.filter((s) => s.signal === "sell").length;
+  const neutralCount = signals.filter((s) => s.signal === "neutral").length;
+  const score = buyCount - sellCount;
+  let overall = "NEUTRAL";
+  if (score >= 6) overall = "STRONG BUY";
+  else if (score >= 2) overall = "BUY";
+  else if (score <= -6) overall = "STRONG SELL";
+  else if (score <= -2) overall = "SELL";
+  let maCross = null;
+  if (ma.sma50 != null && ma.sma200 != null) {
+    maCross = ma.sma50 > ma.sma200 ? "Golden Cross (bullish)" : "Death Cross (bearish)";
+  }
+  const result = {
+    symbol,
+    available: true,
+    price: +price.toFixed(2),
+    summary: { overall, buy: buyCount, sell: sellCount, neutral: neutralCount, score },
+    movingAverages: {
+      sma20: ma.sma20 && +ma.sma20.toFixed(2),
+      sma50: ma.sma50 && +ma.sma50.toFixed(2),
+      sma100: ma.sma100 && +ma.sma100.toFixed(2),
+      sma200: ma.sma200 && +ma.sma200.toFixed(2),
+      ema12: ma.ema12 && +ma.ema12.toFixed(2),
+      ema26: ma.ema26 && +ma.ema26.toFixed(2),
+      ema50: ma.ema50 && +ma.ema50.toFixed(2),
+      cross: maCross
+    },
+    oscillators: {
+      rsi14: rsi14 && +rsi14.toFixed(2),
+      macd: macdVal && { macd: +macdVal.macd.toFixed(3), signal: +macdVal.signal.toFixed(3), histogram: +macdVal.histogram.toFixed(3) },
+      stochastic: stoch && { k: +stoch.k.toFixed(2), d: +stoch.d.toFixed(2) },
+      cci20: cci != null ? +cci.toFixed(2) : null,
+      williamsR: williamsR != null ? +williamsR.toFixed(2) : null,
+      atr14: atr14 && +atr14.toFixed(2),
+      adx: adxVal && { adx: +adxVal.adx.toFixed(2), plusDI: +adxVal.plusDI.toFixed(2), minusDI: +adxVal.minusDI.toFixed(2) }
+    },
+    bollinger: bb && { upper: +bb.upper.toFixed(2), middle: +bb.middle.toFixed(2), lower: +bb.lower.toFixed(2), bandwidth: +bb.bandwidth.toFixed(2) },
+    range52w: { high: +week52High.toFixed(2), low: +week52Low.toFixed(2), position: +rangePosition.toFixed(1) },
+    volume: { latest: volumes[volumes.length - 1], avg20: avgVol20 && Math.round(avgVol20), ratio: volumeRatio && +volumeRatio.toFixed(2) },
+    pivots: pivots && Object.fromEntries(Object.entries(pivots).map(([k, v]) => [k, +v.toFixed(2)])),
+    signals,
+    candleCount: candles.length
+  };
+  return result;
+}
+
+// bot/statistics.js
+var EULER_MASCHERONI = 0.5772156649015329;
+var mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+function stdev(a, sample = true) {
+  if (a.length < 2) return 0;
+  const m = mean(a);
+  return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / (a.length - (sample ? 1 : 0)));
+}
+function skewness(a) {
+  const n = a.length;
+  if (n < 3) return 0;
+  const m = mean(a), sd = stdev(a, false);
+  if (!sd) return 0;
+  return a.reduce((s, v) => s + ((v - m) / sd) ** 3, 0) / n;
+}
+function kurtosis(a) {
+  const n = a.length;
+  if (n < 4) return 3;
+  const m = mean(a), sd = stdev(a, false);
+  if (!sd) return 3;
+  return a.reduce((s, v) => s + ((v - m) / sd) ** 4, 0) / n;
+}
+function invNorm(p) {
+  if (p <= 0) return -Infinity;
+  if (p >= 1) return Infinity;
+  const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687, 138.357751867269, -30.66479806614716, 2.506628277459239];
+  const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866, 66.80131188771972, -13.28068155288572];
+  const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
+  const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996, 3.754408661907416];
+  const pl = 0.02425;
+  if (p < pl) {
+    const q2 = Math.sqrt(-2 * Math.log(p));
+    return (((((c[0] * q2 + c[1]) * q2 + c[2]) * q2 + c[3]) * q2 + c[4]) * q2 + c[5]) / ((((d[0] * q2 + d[1]) * q2 + d[2]) * q2 + d[3]) * q2 + 1);
+  }
+  if (p > 1 - pl) {
+    const q2 = Math.sqrt(-2 * Math.log(1 - p));
+    return -(((((c[0] * q2 + c[1]) * q2 + c[2]) * q2 + c[3]) * q2 + c[4]) * q2 + c[5]) / ((((d[0] * q2 + d[1]) * q2 + d[2]) * q2 + d[3]) * q2 + 1);
+  }
+  const q = p - 0.5, r = q * q;
+  return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+}
+function sharpe(returns, rf = 0) {
+  if (returns.length < 2) return 0;
+  const sd = stdev(returns);
+  return sd ? (mean(returns) - rf) / sd : 0;
+}
+function sortino(returns, rf = 0) {
+  if (returns.length < 2) return 0;
+  const downside = returns.filter((r) => r < rf).map((r) => (r - rf) ** 2);
+  if (!downside.length) return Infinity;
+  const dd = Math.sqrt(downside.reduce((a, b) => a + b, 0) / returns.length);
+  return dd ? (mean(returns) - rf) / dd : 0;
+}
+function maxDrawdown(equity) {
+  let peak = -Infinity, maxDd = 0, peakIdx = 0, troughIdx = 0, curPeak = 0;
+  for (let i = 0; i < equity.length; i++) {
+    if (equity[i] > peak) {
+      peak = equity[i];
+      curPeak = i;
+    }
+    const dd = peak > 0 ? (peak - equity[i]) / peak : 0;
+    if (dd > maxDd) {
+      maxDd = dd;
+      peakIdx = curPeak;
+      troughIdx = i;
+    }
+  }
+  return { maxDrawdown: maxDd, peakIndex: peakIdx, troughIndex: troughIdx };
+}
+function probabilisticSharpe(observedSR, benchmarkSR, n, skew, kurt) {
+  if (n < 2) return null;
+  const denom = 1 - skew * observedSR + (kurt - 1) / 4 * observedSR * observedSR;
+  if (denom <= 0) return null;
+  return normCdf((observedSR - benchmarkSR) * Math.sqrt(n - 1) / Math.sqrt(denom));
+}
+function expectedMaxSharpe(nTrials, sharpeVariance) {
+  if (nTrials < 2) return 0;
+  const sd = Math.sqrt(Math.max(sharpeVariance, 0));
+  if (!sd) return 0;
+  const a = invNorm(1 - 1 / nTrials);
+  const b = invNorm(1 - 1 / (nTrials * Math.E));
+  return sd * ((1 - EULER_MASCHERONI) * a + EULER_MASCHERONI * b);
+}
+function deflatedSharpe(returns, nTrials, sharpeVariance = null) {
+  if (returns.length < 4) return null;
+  const sr = sharpe(returns);
+  const sk = skewness(returns);
+  const ku = kurtosis(returns);
+  const variance = sharpeVariance != null ? sharpeVariance : (1 + 0.5 * sr * sr) / (returns.length - 1);
+  const sr0 = expectedMaxSharpe(nTrials, variance);
+  const dsr = probabilisticSharpe(sr, sr0, returns.length, sk, ku);
+  return { sharpe: sr, expectedMaxSharpe: sr0, deflatedSharpe: dsr, skew: sk, kurtosis: ku, nTrials };
+}
+function probabilityOfBacktestOverfitting(returnsMatrix, blocks = 8) {
+  const nStrat = returnsMatrix.length;
+  if (nStrat < 2) return null;
+  const T = Math.min(...returnsMatrix.map((r) => r.length));
+  if (T < blocks * 2) return null;
+  const S = blocks % 2 === 0 ? blocks : blocks - 1;
+  const blockSize = Math.floor(T / S);
+  const blockIdx = Array.from({ length: S }, (_, i) => i);
+  const combos = [];
+  const choose = (start, acc) => {
+    if (acc.length === S / 2) {
+      combos.push([...acc]);
+      return;
+    }
+    for (let i = start; i < S; i++) {
+      acc.push(i);
+      choose(i + 1, acc);
+      acc.pop();
+    }
+  };
+  choose(0, []);
+  const sliceBlocks = (row, blocksWanted) => {
+    const out = [];
+    for (const b of blocksWanted) {
+      out.push(...row.slice(b * blockSize, (b + 1) * blockSize));
+    }
+    return out;
+  };
+  let overfitCount = 0;
+  const logits = [];
+  for (const inSample of combos) {
+    const outSample = blockIdx.filter((b) => !inSample.includes(b));
+    const isSharpes = returnsMatrix.map((r) => sharpe(sliceBlocks(r, inSample)));
+    const oosSharpes = returnsMatrix.map((r) => sharpe(sliceBlocks(r, outSample)));
+    let best = 0;
+    for (let i = 1; i < nStrat; i++) if (isSharpes[i] > isSharpes[best]) best = i;
+    const rank = oosSharpes.filter((s) => s <= oosSharpes[best]).length;
+    const relRank = rank / (nStrat + 1);
+    const w = Math.min(Math.max(relRank, 1e-6), 1 - 1e-6);
+    logits.push(Math.log(w / (1 - w)));
+    if (relRank <= 0.5) overfitCount++;
+  }
+  return {
+    pbo: overfitCount / combos.length,
+    splits: combos.length,
+    medianLogit: logits.sort((a, b) => a - b)[Math.floor(logits.length / 2)]
+  };
+}
+function summarise(equityCurve, periodReturns, periodsPerYear = 252, rfAnnual = 0.045) {
+  const n = periodReturns.length;
+  if (!n || equityCurve.length < 2) return null;
+  const start = equityCurve[0], end = equityCurve[equityCurve.length - 1];
+  const years = n / periodsPerYear;
+  const totalReturn = (end - start) / start;
+  const cagr = years > 0 && start > 0 ? Math.pow(end / start, 1 / years) - 1 : 0;
+  const rfPeriod = rfAnnual / periodsPerYear;
+  const sr = sharpe(periodReturns, rfPeriod);
+  const so = sortino(periodReturns, rfPeriod);
+  const dd = maxDrawdown(equityCurve);
+  const vol = stdev(periodReturns) * Math.sqrt(periodsPerYear);
+  const wins = periodReturns.filter((r) => r > 0);
+  const losses = periodReturns.filter((r) => r < 0);
+  const grossWin = wins.reduce((a, b) => a + b, 0);
+  const grossLoss = Math.abs(losses.reduce((a, b) => a + b, 0));
+  return {
+    totalReturn: +(totalReturn * 100).toFixed(2),
+    cagr: +(cagr * 100).toFixed(2),
+    volatility: +(vol * 100).toFixed(2),
+    // Annualise Sharpe/Sortino from per-period values.
+    sharpe: +(sr * Math.sqrt(periodsPerYear)).toFixed(3),
+    sortino: Number.isFinite(so) ? +(so * Math.sqrt(periodsPerYear)).toFixed(3) : null,
+    maxDrawdown: +(dd.maxDrawdown * 100).toFixed(2),
+    // Return earned per unit of worst-case pain.
+    calmar: dd.maxDrawdown > 0 ? +(cagr / dd.maxDrawdown).toFixed(3) : null,
+    winRate: +(wins.length / n * 100).toFixed(1),
+    profitFactor: grossLoss > 0 ? +(grossWin / grossLoss).toFixed(3) : null,
+    periods: n,
+    years: +years.toFixed(2)
+  };
+}
+
+// bot/backtest.js
+var DEFAULT_COSTS = {
+  commissionPerShare: 5e-3,
+  // typical retail per-share commission
+  commissionMinimum: 1,
+  slippageBps: 5,
+  // 5 basis points of adverse price movement
+  spreadBps: 2
+  // half-spread paid on entry and exit
+};
+function fillPrice(price, side, costs) {
+  const adverse = (costs.slippageBps + costs.spreadBps) / 1e4;
+  return side === "buy" ? price * (1 + adverse) : price * (1 - adverse);
+}
+function commission(shares, costs) {
+  return Math.max(shares * costs.commissionPerShare, costs.commissionMinimum);
+}
+function runBacktest(candles, options = {}) {
+  const {
+    symbol = "",
+    strategies = Object.keys(STRATEGIES),
+    threshold = 0.15,
+    initialCapital = 1e5,
+    maxPositionPercent = 20,
+    costs = DEFAULT_COSTS,
+    warmup = 200,
+    periodsPerYear = 252,
+    rfAnnual = 0.045
+  } = options;
+  if (!candles || candles.length < warmup + 20) {
+    return { available: false, message: `Need at least ${warmup + 20} bars, got ${candles?.length || 0}` };
+  }
+  let cash = initialCapital;
+  let shares = 0;
+  const equityCurve = [];
+  const trades = [];
+  const decisions2 = [];
+  let totalCommission = 0, totalSlippage = 0;
+  for (let t = warmup; t < candles.length; t++) {
+    const visible = candles.slice(0, t + 1);
+    const bar = candles[t];
+    const ta = computeTechnical(visible, symbol);
+    const decision = ta.available ? ensemble(ta, strategies, threshold) : { action: "HOLD", confidence: 0, signals: [] };
+    const nextBar = candles[t + 1];
+    if (nextBar) {
+      const equityNow = cash + shares * bar.close;
+      if (decision.action === "BUY" && shares === 0) {
+        const qty = sizePosition(decision, equityNow, nextBar.open, maxPositionPercent);
+        if (qty > 0) {
+          const px = fillPrice(nextBar.open, "buy", costs);
+          const comm = commission(qty, costs);
+          const cost = qty * px + comm;
+          if (cost <= cash) {
+            const slip = qty * (px - nextBar.open);
+            cash -= cost;
+            shares += qty;
+            totalCommission += comm;
+            totalSlippage += slip;
+            trades.push({
+              time: nextBar.time,
+              side: "buy",
+              qty,
+              price: +px.toFixed(4),
+              reference: nextBar.open,
+              commission: +comm.toFixed(2),
+              slippage: +slip.toFixed(2),
+              confidence: decision.confidence,
+              rationale: decision.rationale
+            });
+          }
+        }
+      } else if (decision.action === "SELL" && shares > 0) {
+        const px = fillPrice(nextBar.open, "sell", costs);
+        const comm = commission(shares, costs);
+        const slip = shares * (nextBar.open - px);
+        cash += shares * px - comm;
+        totalCommission += comm;
+        totalSlippage += slip;
+        trades.push({
+          time: nextBar.time,
+          side: "sell",
+          qty: shares,
+          price: +px.toFixed(4),
+          reference: nextBar.open,
+          commission: +comm.toFixed(2),
+          slippage: +slip.toFixed(2),
+          confidence: decision.confidence,
+          rationale: decision.rationale
+        });
+        shares = 0;
+      }
+    }
+    equityCurve.push(cash + shares * bar.close);
+    decisions2.push({ time: bar.time, action: decision.action, confidence: decision.confidence });
+  }
+  const last = candles[candles.length - 1];
+  const finalEquity = cash + shares * last.close;
+  const periodReturns = [];
+  for (let i = 1; i < equityCurve.length; i++) {
+    periodReturns.push((equityCurve[i] - equityCurve[i - 1]) / equityCurve[i - 1]);
+  }
+  const stats = summarise(equityCurve, periodReturns, periodsPerYear, rfAnnual);
+  const bhStart = candles[warmup];
+  const bhEntry = fillPrice(bhStart.close, "buy", costs);
+  const bhShares = Math.floor(initialCapital / bhEntry);
+  const bhCash = initialCapital - bhShares * bhEntry - commission(bhShares, costs);
+  const bhCurve = candles.slice(warmup).map((c) => bhCash + bhShares * c.close);
+  const bhReturns = [];
+  for (let i = 1; i < bhCurve.length; i++) {
+    bhReturns.push((bhCurve[i] - bhCurve[i - 1]) / bhCurve[i - 1]);
+  }
+  const bhStats = summarise(bhCurve, bhReturns, periodsPerYear, rfAnnual);
+  return {
+    available: true,
+    symbol,
+    config: { strategies, threshold, initialCapital, maxPositionPercent, costs, warmup },
+    bars: equityCurve.length,
+    from: candles[warmup]?.time,
+    to: last.time,
+    finalEquity: +finalEquity.toFixed(2),
+    stats,
+    benchmark: bhStats,
+    // The number that decides whether the strategy was worth running at all.
+    excessReturn: stats && bhStats ? +(stats.totalReturn - bhStats.totalReturn).toFixed(2) : null,
+    beatBenchmark: stats && bhStats ? stats.totalReturn > bhStats.totalReturn : null,
+    trades: trades.length,
+    tradeLog: trades.slice(-40),
+    costs: {
+      totalCommission: +totalCommission.toFixed(2),
+      totalSlippage: +totalSlippage.toFixed(2),
+      totalCost: +(totalCommission + totalSlippage).toFixed(2),
+      // Costs as a share of starting capital — the drag a frictionless
+      // backtest would have hidden entirely.
+      costDragPercent: +((totalCommission + totalSlippage) / initialCapital * 100).toFixed(2)
+    },
+    equityCurve: equityCurve.map((v, i) => ({
+      time: candles[warmup + i].time,
+      equity: +v.toFixed(2),
+      benchmark: bhCurve[i] != null ? +bhCurve[i].toFixed(2) : null
+    })),
+    periodReturns
+  };
+}
+function walkForward(candles, options = {}) {
+  const { folds = 4, warmup = 200, ...rest } = options;
+  const usable = candles.length - warmup;
+  if (usable < folds * 60) {
+    return { available: false, message: `Need ~${folds * 60 + warmup} bars for ${folds} folds` };
+  }
+  const foldSize = Math.floor(usable / folds);
+  const results = [];
+  for (let f = 0; f < folds; f++) {
+    const end = warmup + foldSize * (f + 1);
+    const start = warmup + foldSize * f;
+    const slice = candles.slice(0, end);
+    const r = runBacktest(slice, { ...rest, warmup: start });
+    if (r.available) {
+      results.push({
+        fold: f + 1,
+        from: candles[start]?.time,
+        to: candles[end - 1]?.time,
+        totalReturn: r.stats?.totalReturn ?? null,
+        sharpe: r.stats?.sharpe ?? null,
+        maxDrawdown: r.stats?.maxDrawdown ?? null,
+        benchmarkReturn: r.benchmark?.totalReturn ?? null,
+        beatBenchmark: r.beatBenchmark,
+        trades: r.trades
+      });
+    }
+  }
+  if (!results.length) return { available: false, message: "No fold produced a result" };
+  const rets = results.map((r) => r.totalReturn).filter((v) => v != null);
+  const beats = results.filter((r) => r.beatBenchmark).length;
+  return {
+    available: true,
+    folds: results,
+    consistency: {
+      foldsBeatingBenchmark: beats,
+      totalFolds: results.length,
+      // Persistence across folds is the point. A strategy that wins once and
+      // loses three times has not shown anything.
+      beatRate: +(beats / results.length * 100).toFixed(1),
+      meanReturn: rets.length ? +(rets.reduce((a, b) => a + b, 0) / rets.length).toFixed(2) : null,
+      returnStdev: rets.length > 1 ? +stdev(rets).toFixed(2) : null,
+      worstFold: rets.length ? +Math.min(...rets).toFixed(2) : null,
+      bestFold: rets.length ? +Math.max(...rets).toFixed(2) : null
+    }
+  };
+}
+function sweepStrategies(candles, options = {}) {
+  const { thresholds = [0.1, 0.15, 0.25], ...rest } = options;
+  const keys = Object.keys(STRATEGIES);
+  const combos = [
+    ...keys.map((k) => [k]),
+    ["trend", "consensus"],
+    ["rsi", "bollinger"],
+    ["trend", "macd"],
+    keys
+  ];
+  const variants = [];
+  for (const strategies of combos) {
+    for (const threshold of thresholds) {
+      const r = runBacktest(candles, { ...rest, strategies, threshold });
+      if (r.available && r.stats) {
+        variants.push({
+          strategies,
+          threshold,
+          totalReturn: r.stats.totalReturn,
+          sharpe: r.stats.sharpe,
+          maxDrawdown: r.stats.maxDrawdown,
+          trades: r.trades,
+          beatBenchmark: r.beatBenchmark,
+          periodReturns: r.periodReturns
+        });
+      }
+    }
+  }
+  if (!variants.length) return { available: false, message: "No variant produced a result" };
+  const ranked = [...variants].sort((a, b) => b.sharpe - a.sharpe);
+  const best = ranked[0];
+  const sharpes = variants.map((v) => v.sharpe);
+  const sharpeVar = sharpes.length > 1 ? Math.pow(stdev(sharpes), 2) : 0;
+  const perPeriod = best.periodReturns;
+  const dsr = deflatedSharpe(
+    perPeriod,
+    variants.length,
+    sharpeVar / (options.periodsPerYear || 252)
+  );
+  const pbo = probabilityOfBacktestOverfitting(
+    variants.map((v) => v.periodReturns),
+    6
+  );
+  return {
+    available: true,
+    trials: variants.length,
+    best: {
+      strategies: best.strategies,
+      threshold: best.threshold,
+      totalReturn: best.totalReturn,
+      sharpe: best.sharpe,
+      maxDrawdown: best.maxDrawdown,
+      trades: best.trades,
+      beatBenchmark: best.beatBenchmark
+    },
+    ranking: ranked.slice(0, 10).map(({ periodReturns, ...v }) => v),
+    overfitting: {
+      deflatedSharpe: dsr?.deflatedSharpe ?? null,
+      expectedMaxSharpeByLuck: dsr?.expectedMaxSharpe ?? null,
+      pbo: pbo?.pbo ?? null,
+      pboSplits: pbo?.splits ?? null,
+      // Plain-language verdict, because the numbers are easy to misread.
+      verdict: verdictFor(dsr?.deflatedSharpe, pbo?.pbo)
+    }
+  };
+}
+function verdictFor(dsr, pbo) {
+  if (dsr == null && pbo == null) return "Not enough data to judge.";
+  if (dsr != null && dsr < 0.9) {
+    return "Not distinguishable from luck \u2014 the best variant is about what you would expect from trying this many.";
+  }
+  if (pbo != null && pbo > 0.5) {
+    return "High overfitting risk \u2014 the in-sample winner usually underperforms out of sample.";
+  }
+  if (dsr != null && dsr >= 0.95 && (pbo == null || pbo < 0.3)) {
+    return "Survives deflation and shows low overfitting risk. Still needs forward testing.";
+  }
+  return "Mixed evidence \u2014 treat with caution and forward test before trusting it.";
+}
+
 // server.js
 dotenv.config();
 var app = express();
@@ -1787,115 +2448,6 @@ async function yahooCandles(symbol, interval, range) {
     close: q.close?.[i] ?? null,
     volume: q.volume?.[i] ?? 0
   })).filter((c) => c.open !== null && c.close !== null);
-}
-function sma(values, period) {
-  if (values.length < period) return null;
-  const slice = values.slice(-period);
-  return slice.reduce((a, b) => a + b, 0) / period;
-}
-function ema(values, period) {
-  if (values.length < period) return null;
-  const k = 2 / (period + 1);
-  let e = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  for (let i = period; i < values.length; i++) e = values[i] * k + e * (1 - k);
-  return e;
-}
-function emaSeries(values, period) {
-  if (values.length < period) return [];
-  const k = 2 / (period + 1);
-  const out = [];
-  let e = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
-  out.push(e);
-  for (let i = period; i < values.length; i++) {
-    e = values[i] * k + e * (1 - k);
-    out.push(e);
-  }
-  return out;
-}
-function rsi(closes, period = 14) {
-  if (closes.length < period + 1) return null;
-  let gains = 0, losses = 0;
-  for (let i = closes.length - period; i < closes.length; i++) {
-    const diff = closes[i] - closes[i - 1];
-    if (diff >= 0) gains += diff;
-    else losses -= diff;
-  }
-  const avgGain = gains / period, avgLoss = losses / period;
-  if (avgLoss === 0) return 100;
-  const rs = avgGain / avgLoss;
-  return 100 - 100 / (1 + rs);
-}
-function macd(closes, fast = 12, slow = 26, signal = 9) {
-  if (closes.length < slow + signal) return null;
-  const fastE = emaSeries(closes, fast);
-  const slowE = emaSeries(closes, slow);
-  const offset = fastE.length - slowE.length;
-  const macdLine = slowE.map((s, i) => fastE[i + offset] - s);
-  const signalLine = emaSeries(macdLine, signal);
-  const macdVal = macdLine[macdLine.length - 1];
-  const sigVal = signalLine[signalLine.length - 1];
-  return { macd: macdVal, signal: sigVal, histogram: macdVal - sigVal };
-}
-function bollinger(closes, period = 20, mult = 2) {
-  if (closes.length < period) return null;
-  const slice = closes.slice(-period);
-  const mean2 = slice.reduce((a, b) => a + b, 0) / period;
-  const variance = slice.reduce((a, b) => a + (b - mean2) ** 2, 0) / period;
-  const sd = Math.sqrt(variance);
-  return { middle: mean2, upper: mean2 + mult * sd, lower: mean2 - mult * sd, bandwidth: 2 * mult * sd / mean2 * 100 };
-}
-function stochastic(highs, lows, closes, period = 14, smooth = 3) {
-  if (closes.length < period + smooth) return null;
-  const kSeries = [];
-  for (let i = period - 1; i < closes.length; i++) {
-    const hh = Math.max(...highs.slice(i - period + 1, i + 1));
-    const ll = Math.min(...lows.slice(i - period + 1, i + 1));
-    kSeries.push(hh === ll ? 50 : (closes[i] - ll) / (hh - ll) * 100);
-  }
-  const k = kSeries[kSeries.length - 1];
-  const d = kSeries.slice(-smooth).reduce((a, b) => a + b, 0) / smooth;
-  return { k, d };
-}
-function atr(highs, lows, closes, period = 14) {
-  if (closes.length < period + 1) return null;
-  const trs = [];
-  for (let i = 1; i < closes.length; i++) {
-    trs.push(Math.max(
-      highs[i] - lows[i],
-      Math.abs(highs[i] - closes[i - 1]),
-      Math.abs(lows[i] - closes[i - 1])
-    ));
-  }
-  return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
-}
-function adx(highs, lows, closes, period = 14) {
-  if (closes.length < period * 2) return null;
-  const plusDM = [], minusDM = [], tr = [];
-  for (let i = 1; i < closes.length; i++) {
-    const up = highs[i] - highs[i - 1];
-    const down = lows[i - 1] - lows[i];
-    plusDM.push(up > down && up > 0 ? up : 0);
-    minusDM.push(down > up && down > 0 ? down : 0);
-    tr.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i - 1]), Math.abs(lows[i] - closes[i - 1])));
-  }
-  const smooth = (arr) => arr.slice(-period).reduce((a, b) => a + b, 0);
-  const atrSum = smooth(tr) || 1;
-  const plusDI = smooth(plusDM) / atrSum * 100;
-  const minusDI = smooth(minusDM) / atrSum * 100;
-  const dx = Math.abs(plusDI - minusDI) / (plusDI + minusDI || 1) * 100;
-  return { adx: dx, plusDI, minusDI };
-}
-function pivotPoints(high, low, close) {
-  const p = (high + low + close) / 3;
-  return {
-    pivot: p,
-    r1: 2 * p - low,
-    r2: p + (high - low),
-    r3: high + 2 * (p - low),
-    s1: 2 * p - high,
-    s2: p - (high - low),
-    s3: low - 2 * (high - p)
-  };
 }
 async function finnhubFetch(path) {
   if (!FINNHUB_KEY) return null;
@@ -2839,9 +3391,9 @@ app.get("/api/v1/analytics/correlation", async (req, res) => {
     }
     const len = Math.min(...valid.map((s) => returnsBySymbol[s].length));
     const series = valid.map((s) => returnsBySymbol[s].slice(-len));
-    const mean2 = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+    const mean3 = (a) => a.reduce((x, y) => x + y, 0) / a.length;
     const corr = (a, b) => {
-      const ma = mean2(a), mb = mean2(b);
+      const ma = mean3(a), mb = mean3(b);
       let num = 0, da = 0, db = 0;
       for (let i = 0; i < a.length; i++) {
         const x = a[i] - ma, y = b[i] - mb;
@@ -2911,9 +3463,9 @@ async function buildPortfolioReturns(symbols, values, range = "2y") {
   }
   return { portfolio, valid, weights, totalValue, seriesBySymbol, len };
 }
-var mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
-var stdev = (a) => {
-  const m = mean(a);
+var mean2 = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+var stdev2 = (a) => {
+  const m = mean2(a);
   return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / (a.length - 1 || 1));
 };
 app.get("/api/v1/markets", async (req, res) => {
@@ -3041,14 +3593,14 @@ app.get("/api/v1/analytics/var", async (req, res) => {
     const { portfolio, totalValue, valid } = built;
     const alpha = 1 - confidence / 100;
     const scale = Math.sqrt(horizon);
-    const mu = mean(portfolio);
-    const sigma = stdev(portfolio);
+    const mu = mean2(portfolio);
+    const sigma = stdev2(portfolio);
     const sorted = [...portfolio].sort((a, b) => a - b);
     const idx = Math.max(0, Math.floor(alpha * sorted.length) - 1);
     const histRet = sorted[idx];
     const tail = sorted.slice(0, Math.max(idx + 1, 1));
-    const cvarRet = mean(tail);
-    const invNorm = (p) => {
+    const cvarRet = mean2(tail);
+    const invNorm2 = (p) => {
       const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687, 138.357751867269, -30.66479806614716, 2.506628277459239];
       const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866, 66.80131188771972, -13.28068155288572];
       const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
@@ -3065,7 +3617,7 @@ app.get("/api/v1/analytics/var", async (req, res) => {
       const q = p - 0.5, r = q * q;
       return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
     };
-    const z = invNorm(alpha);
+    const z = invNorm2(alpha);
     const paramRet = mu + z * sigma;
     const SIMS = 1e4;
     const sims = [];
@@ -3567,7 +4119,7 @@ app.get("/api/v1/analytics/stress", async (req, res) => {
       const arr = seriesBySymbol[sym];
       const n = Math.min(arr.length, spyRets.length);
       const a = arr.slice(-n), b = spyRets.slice(-n);
-      const ma = mean(a), mb = mean(b);
+      const ma = mean2(a), mb = mean2(b);
       let cov = 0, varb = 0;
       for (let i = 0; i < n; i++) {
         cov += (a[i] - ma) * (b[i] - mb);
@@ -3790,110 +4342,8 @@ app.get("/api/v1/technical", async (req, res) => {
     const cached = cacheGet(cacheKey);
     if (cached) return res.json(cached);
     const candles = await yahooCandles(symbol, "1d", "1y").catch(() => []);
-    if (candles.length < 30) {
-      return res.json({ symbol, available: false, message: "Insufficient price history" });
-    }
-    const closes = candles.map((c) => c.close);
-    const highs = candles.map((c) => c.high);
-    const lows = candles.map((c) => c.low);
-    const volumes = candles.map((c) => c.volume);
-    const price = closes[closes.length - 1];
-    const prevCandle = candles[candles.length - 2];
-    const ma = {
-      sma20: sma(closes, 20),
-      sma50: sma(closes, 50),
-      sma100: sma(closes, 100),
-      sma200: sma(closes, 200),
-      ema12: ema(closes, 12),
-      ema26: ema(closes, 26),
-      ema50: ema(closes, 50)
-    };
-    const rsi14 = rsi(closes, 14);
-    const macdVal = macd(closes);
-    const bb = bollinger(closes, 20, 2);
-    const stoch = stochastic(highs, lows, closes, 14, 3);
-    const atr14 = atr(highs, lows, closes, 14);
-    const adxVal = adx(highs, lows, closes, 14);
-    const cci = (() => {
-      const period = 20;
-      if (closes.length < period) return null;
-      const tp = candles.slice(-period).map((c) => (c.high + c.low + c.close) / 3);
-      const mean2 = tp.reduce((a, b) => a + b, 0) / period;
-      const meanDev = tp.reduce((a, b) => a + Math.abs(b - mean2), 0) / period;
-      const currentTP = tp[tp.length - 1];
-      return meanDev ? (currentTP - mean2) / (0.015 * meanDev) : 0;
-    })();
-    const williamsR = (() => {
-      const period = 14;
-      if (closes.length < period) return null;
-      const hh = Math.max(...highs.slice(-period));
-      const ll = Math.min(...lows.slice(-period));
-      return hh === ll ? -50 : (hh - price) / (hh - ll) * -100;
-    })();
-    const week52High = Math.max(...highs);
-    const week52Low = Math.min(...lows);
-    const rangePosition = week52High === week52Low ? 50 : (price - week52Low) / (week52High - week52Low) * 100;
-    const avgVol20 = sma(volumes, 20);
-    const volumeRatio = avgVol20 ? volumes[volumes.length - 1] / avgVol20 : null;
-    const pivots = prevCandle ? pivotPoints(prevCandle.high, prevCandle.low, prevCandle.close) : null;
-    const signals = [];
-    const vote = (name, value, signal) => signals.push({ name, value, signal });
-    if (rsi14 != null) vote("RSI (14)", +rsi14.toFixed(2), rsi14 > 70 ? "sell" : rsi14 < 30 ? "buy" : "neutral");
-    if (macdVal) vote("MACD (12,26,9)", +macdVal.histogram.toFixed(3), macdVal.histogram > 0 ? "buy" : macdVal.histogram < 0 ? "sell" : "neutral");
-    if (stoch) vote("Stochastic (14,3)", +stoch.k.toFixed(2), stoch.k > 80 ? "sell" : stoch.k < 20 ? "buy" : "neutral");
-    if (cci != null) vote("CCI (20)", +cci.toFixed(2), cci > 100 ? "sell" : cci < -100 ? "buy" : "neutral");
-    if (williamsR != null) vote("Williams %R", +williamsR.toFixed(2), williamsR > -20 ? "sell" : williamsR < -80 ? "buy" : "neutral");
-    if (adxVal) vote("ADX (14)", +adxVal.adx.toFixed(2), adxVal.adx > 25 ? adxVal.plusDI > adxVal.minusDI ? "buy" : "sell" : "neutral");
-    if (ma.sma20 != null) vote("SMA 20", +ma.sma20.toFixed(2), price > ma.sma20 ? "buy" : "sell");
-    if (ma.sma50 != null) vote("SMA 50", +ma.sma50.toFixed(2), price > ma.sma50 ? "buy" : "sell");
-    if (ma.sma200 != null) vote("SMA 200", +ma.sma200.toFixed(2), price > ma.sma200 ? "buy" : "sell");
-    if (ma.ema12 != null) vote("EMA 12", +ma.ema12.toFixed(2), price > ma.ema12 ? "buy" : "sell");
-    if (ma.ema26 != null) vote("EMA 26", +ma.ema26.toFixed(2), price > ma.ema26 ? "buy" : "sell");
-    if (bb) vote("Bollinger Bands", +bb.middle.toFixed(2), price > bb.upper ? "sell" : price < bb.lower ? "buy" : "neutral");
-    const buyCount = signals.filter((s) => s.signal === "buy").length;
-    const sellCount = signals.filter((s) => s.signal === "sell").length;
-    const neutralCount = signals.filter((s) => s.signal === "neutral").length;
-    const score = buyCount - sellCount;
-    let overall = "NEUTRAL";
-    if (score >= 6) overall = "STRONG BUY";
-    else if (score >= 2) overall = "BUY";
-    else if (score <= -6) overall = "STRONG SELL";
-    else if (score <= -2) overall = "SELL";
-    let maCross = null;
-    if (ma.sma50 != null && ma.sma200 != null) {
-      maCross = ma.sma50 > ma.sma200 ? "Golden Cross (bullish)" : "Death Cross (bearish)";
-    }
-    const result = {
-      symbol,
-      available: true,
-      price: +price.toFixed(2),
-      summary: { overall, buy: buyCount, sell: sellCount, neutral: neutralCount, score },
-      movingAverages: {
-        sma20: ma.sma20 && +ma.sma20.toFixed(2),
-        sma50: ma.sma50 && +ma.sma50.toFixed(2),
-        sma100: ma.sma100 && +ma.sma100.toFixed(2),
-        sma200: ma.sma200 && +ma.sma200.toFixed(2),
-        ema12: ma.ema12 && +ma.ema12.toFixed(2),
-        ema26: ma.ema26 && +ma.ema26.toFixed(2),
-        ema50: ma.ema50 && +ma.ema50.toFixed(2),
-        cross: maCross
-      },
-      oscillators: {
-        rsi14: rsi14 && +rsi14.toFixed(2),
-        macd: macdVal && { macd: +macdVal.macd.toFixed(3), signal: +macdVal.signal.toFixed(3), histogram: +macdVal.histogram.toFixed(3) },
-        stochastic: stoch && { k: +stoch.k.toFixed(2), d: +stoch.d.toFixed(2) },
-        cci20: cci != null ? +cci.toFixed(2) : null,
-        williamsR: williamsR != null ? +williamsR.toFixed(2) : null,
-        atr14: atr14 && +atr14.toFixed(2),
-        adx: adxVal && { adx: +adxVal.adx.toFixed(2), plusDI: +adxVal.plusDI.toFixed(2), minusDI: +adxVal.minusDI.toFixed(2) }
-      },
-      bollinger: bb && { upper: +bb.upper.toFixed(2), middle: +bb.middle.toFixed(2), lower: +bb.lower.toFixed(2), bandwidth: +bb.bandwidth.toFixed(2) },
-      range52w: { high: +week52High.toFixed(2), low: +week52Low.toFixed(2), position: +rangePosition.toFixed(1) },
-      volume: { latest: volumes[volumes.length - 1], avg20: avgVol20 && Math.round(avgVol20), ratio: volumeRatio && +volumeRatio.toFixed(2) },
-      pivots: pivots && Object.fromEntries(Object.entries(pivots).map(([k, v]) => [k, +v.toFixed(2)])),
-      signals,
-      candleCount: candles.length
-    };
+    const result = computeTechnical(candles, symbol);
+    if (!result.available) return res.json(result);
     cacheSet(cacheKey, result, 3e5);
     res.json(result);
   } catch (err) {
@@ -3994,9 +4444,9 @@ app.get("/api/v1/risk", async (req, res) => {
       return returns;
     };
     const spyReturns = calcReturns(spyCandles);
-    const mean2 = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+    const mean3 = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
     const stdDev = (arr) => {
-      const m = mean2(arr);
+      const m = mean3(arr);
       return Math.sqrt(arr.reduce((s, v) => s + (v - m) ** 2, 0) / arr.length);
     };
     let portfolioReturns = new Array(spyReturns.length).fill(0);
@@ -4008,12 +4458,12 @@ app.get("/api/v1/risk", async (req, res) => {
       const minLen = Math.min(returns.length, spyReturns.length);
       for (let i = 0; i < minLen; i++) portfolioReturns[i] += returns[i] * weight;
       const covariance2 = (() => {
-        const mr = mean2(returns.slice(0, minLen));
-        const ms = mean2(spyReturns.slice(0, minLen));
+        const mr = mean3(returns.slice(0, minLen));
+        const ms = mean3(spyReturns.slice(0, minLen));
         return returns.slice(0, minLen).reduce((s, v, i) => s + (v - mr) * (spyReturns[i] - ms), 0) / minLen;
       })();
       const spyVar = (() => {
-        const m = mean2(spyReturns.slice(0, minLen));
+        const m = mean3(spyReturns.slice(0, minLen));
         return spyReturns.slice(0, minLen).reduce((s, v) => s + (v - m) ** 2, 0) / minLen;
       })();
       const beta = spyVar ? covariance2 / spyVar : 1;
@@ -4021,8 +4471,8 @@ app.get("/api/v1/risk", async (req, res) => {
     }
     portfolioReturns = portfolioReturns.filter((r) => r !== 0);
     const portVol = stdDev(portfolioReturns) * Math.sqrt(252) * 100;
-    const portReturn = mean2(portfolioReturns) * 252 * 100;
-    const sharpe = portVol ? (portReturn - 4.5) / portVol : 0;
+    const portReturn = mean3(portfolioReturns) * 252 * 100;
+    const sharpe2 = portVol ? (portReturn - 4.5) / portVol : 0;
     let maxDD = 0, peak = 1;
     let cumulative = 1;
     for (const r of portfolioReturns) {
@@ -4035,7 +4485,7 @@ app.get("/api/v1/risk", async (req, res) => {
     const result = {
       symbols,
       portfolioBeta: +portfolioBeta.toFixed(2),
-      sharpeRatio: +sharpe.toFixed(2),
+      sharpeRatio: +sharpe2.toFixed(2),
       volatility: +portVol.toFixed(2),
       maxDrawdown: +(maxDD * 100).toFixed(2),
       annualizedReturn: +portReturn.toFixed(2),
@@ -4212,6 +4662,33 @@ app.get("/api/v1/bot/audit", (req, res) => {
 app.get("/api/v1/bot/orders", async (req, res) => {
   try {
     res.json(await getOrders(req.query.status || "all", parseInt(req.query.limit) || 50));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.get("/api/v1/bot/backtest", async (req, res) => {
+  try {
+    const symbol = (req.query.symbol || "SPY").toUpperCase();
+    const range = ["1y", "2y", "5y", "10y"].includes(req.query.range) ? req.query.range : "5y";
+    const mode = ["single", "walkforward", "sweep"].includes(req.query.mode) ? req.query.mode : "single";
+    const threshold = Number(req.query.threshold);
+    const strategies = req.query.strategies ? String(req.query.strategies).split(",").filter(Boolean) : void 0;
+    const cacheKey = `bt:${symbol}:${range}:${mode}:${req.query.strategies || ""}:${req.query.threshold || ""}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+    const candles = await yahooCandles(symbol, "1d", range).catch(() => []);
+    if (candles.length < 250) {
+      return res.json({ available: false, message: `Only ${candles.length} bars for ${symbol}; need 250+` });
+    }
+    const opts = {
+      symbol,
+      warmup: 200,
+      ...strategies?.length ? { strategies } : {},
+      ...Number.isFinite(threshold) ? { threshold } : {}
+    };
+    const result = mode === "walkforward" ? walkForward(candles, { ...opts, folds: 4 }) : mode === "sweep" ? sweepStrategies(candles, opts) : runBacktest(candles, opts);
+    cacheSet(cacheKey, { mode, symbol, range, ...result }, 36e5);
+    res.json({ mode, symbol, range, ...result });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
