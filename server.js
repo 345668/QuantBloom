@@ -2754,6 +2754,8 @@ const botFetchNews = async (symbol) => {
   const resp = await fetch(`http://127.0.0.1:${port}/api/v1/news?symbol=${symbol}&limit=5`);
   return resp.ok ? resp.json() : [];
 };
+// A year of daily candles for the active model's feature computation.
+const botFetchCandles = async (symbol) => yahooCandles(symbol, '1d', '1y').catch(() => null);
 
 app.get('/api/v1/bot/status', async (req, res) => {
   try {
@@ -2784,6 +2786,12 @@ app.post('/api/v1/bot/config', (req, res) => {
   res.json(bot.updateConfig(req.body || {}));
 });
 
+// Point the bot at a trained model (modelId: null returns to rule strategies).
+app.post('/api/v1/bot/model', (req, res) => {
+  const result = bot.setActiveModel(req.body?.modelId || null);
+  res.status(result.ok ? 200 : 404).json({ ...result, state: bot.getState() });
+});
+
 app.post('/api/v1/bot/reset-halt', (req, res) => {
   res.json({ ...bot.resetHalt(), state: bot.getState() });
 });
@@ -2794,6 +2802,7 @@ app.post('/api/v1/bot/run', async (req, res) => {
     const result = await bot.runCycle({
       fetchTechnical: botFetchTechnical,
       fetchNews: botFetchNews,
+      fetchCandles: botFetchCandles,
       dryRun: Boolean(req.body?.dryRun),
     });
     res.json(result);

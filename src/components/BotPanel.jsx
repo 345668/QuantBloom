@@ -78,6 +78,15 @@ export default function BotPanel() {
 
       {error && <div className="bot-error">{error}</div>}
 
+      {!data.brokerConfigured && (
+        <div className="bot-notice">
+          Broker not connected. Add <code>ALPACA_API_KEY</code> and
+          {' '}<code>ALPACA_SECRET_KEY</code> to <code>.env</code> and run the bot from a
+          persistent server (<code>node server.js</code> or Docker). Trading and dry runs
+          are disabled on the serverless deployment.
+        </div>
+      )}
+
       {halted && (
         <div className="bot-halt">
           <span>{data.requiresManualRestart ? 'Manual reset required.' : 'Clears at the next trading day.'}</span>
@@ -135,28 +144,60 @@ export default function BotPanel() {
         </div>
       )}
 
-      {/* Models & strategies */}
+      {/* Decision engine: rule strategies or a trained ML model. */}
       <h4 className="sub-title bot-strat-head">
-        <span>Model</span>
-        <button className="bot-link" onClick={() => setShowStrategies(!showStrategies)}>
-          {showStrategies ? 'hide' : 'configure'}
-        </button>
+        <span>Decision engine</span>
+        {!data.activeModel && (
+          <button className="bot-link" onClick={() => setShowStrategies(!showStrategies)}>
+            {showStrategies ? 'hide' : 'configure'}
+          </button>
+        )}
       </h4>
 
-      <div className="bot-presets">
-        {(data.availablePresets || []).map(p => (
-          <button key={p.key}
-            className={`bot-preset ${data.preset === p.key ? 'active' : ''}`}
-            title={p.description}
-            disabled={busy === 'preset'}
-            onClick={() => act('preset', () => post('/api/v1/bot/config', { preset: p.key }))}>
-            {p.name}
+      <div className="bot-engine-row">
+        <button className={`bot-engine-btn ${!data.activeModel ? 'active' : ''}`}
+          disabled={busy === 'model'}
+          onClick={() => act('model', () => post('/api/v1/bot/model', { modelId: null }))}>
+          Rule strategies
+        </button>
+        {(data.availableModels || []).map(m => (
+          <button key={m.id}
+            className={`bot-engine-btn model ${data.activeModel?.id === m.id ? 'active' : ''} ${m.eligible ? 'ok' : 'ungated'}`}
+            disabled={busy === 'model'}
+            title={`${m.modelType} trained on ${m.symbol} · AUC ${m.testAuc ?? '—'} · ${m.eligible ? 'passed publish gate' : 'FAILED gate — paper testing only'}`}
+            onClick={() => act('model', () => post('/api/v1/bot/model', { modelId: m.id }))}>
+            {m.symbol} {m.modelType === 'gbm' ? 'GBM' : 'LR'}{m.eligible ? ' ✓' : ' ⚠'}
           </button>
         ))}
-        {data.preset === 'custom' && <span className="bot-preset active">Custom</span>}
+        {!(data.availableModels || []).length && (
+          <span className="bot-engine-hint">Train models in Model Lab →</span>
+        )}
       </div>
 
-      {showStrategies && (
+      {data.activeModel && (
+        <div className={`bot-model-active ${data.activeModel.eligible ? 'ok' : 'warn'}`}>
+          Using {data.activeModel.modelType.toUpperCase()} model ({data.activeModel.symbol}).
+          {!data.activeModel.eligible && ' Failed the publish gate — paper testing only, not validated.'}
+        </div>
+      )}
+
+      {/* Rule-strategy presets only apply when no model is selected. */}
+      {!data.activeModel && (
+        <div className="bot-presets">
+          {(data.availablePresets || []).map(p => (
+            <button key={p.key}
+              className={`bot-preset ${data.preset === p.key ? 'active' : ''}`}
+              title={p.description}
+              disabled={busy === 'preset'}
+              onClick={() => act('preset', () => post('/api/v1/bot/config', { preset: p.key }))}>
+              {p.name}
+            </button>
+          ))}
+          {data.preset === 'custom' && <span className="bot-preset active">Custom</span>}
+        </div>
+      )}
+
+      {!data.activeModel && showStrategies && (
         <div className="bot-strategies">
           {(data.availableStrategies || []).map(st => {
             const on = data.strategies?.includes(st.key);

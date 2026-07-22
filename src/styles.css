@@ -2335,3 +2335,28 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
 .ml-imp-track { height: 7px; background: var(--bg-secondary); border-radius: 1px; overflow: hidden; }
 .ml-imp-fill { height: 100%; background: var(--accent-purple); }
 .ml-imp-val { font-size: 9px; text-align: right; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+/* --- Bot: decision engine (rule strategies vs ML models) --- */
+.bot-engine-row { display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 5px; }
+.bot-engine-btn {
+  padding: 2px 7px; font-size: 9px; border: 1px solid var(--border);
+  color: var(--text-dim); white-space: nowrap;
+}
+.bot-engine-btn:hover:not(:disabled) { color: var(--text-primary); }
+.bot-engine-btn.active { background: var(--text-primary); color: var(--bg-primary); border-color: var(--text-primary); }
+.bot-engine-btn.model.ok { border-color: var(--accent-up); color: var(--accent-up); }
+.bot-engine-btn.model.ok.active { background: var(--accent-up); color: #fff; }
+.bot-engine-btn.model.ungated { border-color: var(--accent-neutral); color: var(--accent-neutral); }
+.bot-engine-btn.model.ungated.active { background: var(--accent-neutral); color: var(--bg-primary); }
+.bot-engine-hint { font-size: 9px; color: var(--text-dim); align-self: center; }
+.bot-model-active {
+  font-size: 9px; padding: 4px 6px; margin-bottom: 6px; line-height: 1.4;
+  border-left: 3px solid;
+}
+.bot-model-active.ok { color: var(--accent-up); border-color: var(--accent-up); background: rgba(0,204,68,0.06); }
+.bot-model-active.warn { color: var(--accent-neutral); border-color: var(--accent-neutral); background: rgba(255,184,0,0.07); }
+.bot-notice {
+  font-size: 9px; color: var(--text-secondary); padding: 5px 6px; margin-bottom: 6px;
+  border: 1px solid var(--border-bright); background: var(--bg-secondary); line-height: 1.45;
+}
+.bot-notice code { color: var(--accent-blue); font-size: 9px; }

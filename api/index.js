@@ -1271,381 +1271,6 @@ function applyReview(decision, review) {
   return { ...decision, llm: review };
 }
 
-// bot/alpaca.js
-var endpoint = () => process.env.ALPACA_ENDPOINT || "https://paper-api.alpaca.markets/v2";
-var key2 = () => process.env.ALPACA_API_KEY;
-var secret = () => process.env.ALPACA_SECRET_KEY;
-var isPaperEndpoint = (url = endpoint()) => /paper-api\.alpaca\.markets/.test(url);
-var alpacaConfigured = () => Boolean(key2() && secret());
-async function alpaca(path, options = {}) {
-  if (!alpacaConfigured()) throw new Error("Alpaca credentials not configured");
-  const resp = await fetch(`${endpoint()}${path}`, {
-    ...options,
-    headers: {
-      "APCA-API-KEY-ID": key2(),
-      "APCA-API-SECRET-KEY": secret(),
-      "Content-Type": "application/json",
-      ...options.headers || {}
-    }
-  });
-  const text = await resp.text();
-  let body = null;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = { raw: text };
-  }
-  if (!resp.ok) {
-    const msg = body?.message || body?.raw || `HTTP ${resp.status}`;
-    throw new Error(`Alpaca ${path}: ${msg}`);
-  }
-  return body;
-}
-async function getAccount() {
-  const a = await alpaca("/account");
-  return {
-    status: a.status,
-    equity: parseFloat(a.equity),
-    lastEquity: parseFloat(a.last_equity),
-    cash: parseFloat(a.cash),
-    buyingPower: parseFloat(a.buying_power),
-    tradingBlocked: a.trading_blocked,
-    accountBlocked: a.account_blocked,
-    currency: a.currency,
-    // Same-day P&L against the previous close.
-    dailyPnl: parseFloat(a.equity) - parseFloat(a.last_equity),
-    dailyPnlPercent: parseFloat(a.last_equity) ? (parseFloat(a.equity) - parseFloat(a.last_equity)) / parseFloat(a.last_equity) * 100 : 0
-  };
-}
-async function getPositions() {
-  const rows = await alpaca("/positions");
-  return (rows || []).map((p) => ({
-    symbol: p.symbol,
-    qty: parseFloat(p.qty),
-    side: p.side,
-    avgEntryPrice: parseFloat(p.avg_entry_price),
-    marketValue: parseFloat(p.market_value),
-    costBasis: parseFloat(p.cost_basis),
-    unrealisedPnl: parseFloat(p.unrealized_pl),
-    unrealisedPercent: parseFloat(p.unrealized_plpc) * 100,
-    currentPrice: parseFloat(p.current_price)
-  }));
-}
-async function getClock() {
-  const c = await alpaca("/clock");
-  return { isOpen: c.is_open, nextOpen: c.next_open, nextClose: c.next_close, timestamp: c.timestamp };
-}
-async function getOrders(status = "all", limit = 50) {
-  const rows = await alpaca(`/orders?status=${status}&limit=${limit}&direction=desc`);
-  return (rows || []).map((o) => ({
-    id: o.id,
-    clientOrderId: o.client_order_id,
-    symbol: o.symbol,
-    side: o.side,
-    qty: parseFloat(o.qty),
-    filledQty: parseFloat(o.filled_qty || 0),
-    type: o.type,
-    status: o.status,
-    submittedAt: o.submitted_at,
-    filledAt: o.filled_at,
-    filledAvgPrice: o.filled_avg_price ? parseFloat(o.filled_avg_price) : null
-  }));
-}
-async function submitOrder({ symbol, side, qty, type = "market", timeInForce = "day", clientOrderId }) {
-  const body = {
-    symbol,
-    side,
-    qty: String(qty),
-    type,
-    time_in_force: timeInForce,
-    ...clientOrderId ? { client_order_id: clientOrderId } : {}
-  };
-  const o = await alpaca("/orders", { method: "POST", body: JSON.stringify(body) });
-  return {
-    id: o.id,
-    clientOrderId: o.client_order_id,
-    symbol: o.symbol,
-    side: o.side,
-    qty: parseFloat(o.qty),
-    type: o.type,
-    status: o.status,
-    submittedAt: o.submitted_at
-  };
-}
-async function cancelAllOrders() {
-  try {
-    const r = await alpaca("/orders", { method: "DELETE" });
-    return { cancelled: Array.isArray(r) ? r.length : 0 };
-  } catch (e) {
-    return { cancelled: 0, error: e.message };
-  }
-}
-async function closeAllPositions() {
-  try {
-    const r = await alpaca("/positions?cancel_orders=true", { method: "DELETE" });
-    const rows = Array.isArray(r) ? r : [];
-    return {
-      attempted: rows.length,
-      succeeded: rows.filter((x) => x.status >= 200 && x.status < 300).length,
-      failures: rows.filter((x) => !(x.status >= 200 && x.status < 300)).map((x) => x.symbol)
-    };
-  } catch (e) {
-    return { attempted: 0, succeeded: 0, failures: [], error: e.message };
-  }
-}
-
-// bot/engine.js
-var state = {
-  enabled: false,
-  // OFF by default. Always.
-  halted: false,
-  haltReason: null,
-  requiresManualRestart: false,
-  mode: "paper",
-  watchlist: ["AAPL", "MSFT", "NVDA", "SPY", "QQQ"],
-  strategies: PRESETS.balanced.strategies,
-  threshold: PRESETS.balanced.threshold,
-  preset: "balanced",
-  useLlm: true,
-  limits: { ...DEFAULT_LIMITS },
-  ordersToday: 0,
-  ordersDate: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
-  peakEquity: null,
-  lastRun: null,
-  lastError: null
-};
-var decisions = [];
-var auditLog = [];
-var MAX_LOG = 200;
-function audit(event, detail = {}) {
-  auditLog.unshift({ at: (/* @__PURE__ */ new Date()).toISOString(), event, ...detail });
-  if (auditLog.length > MAX_LOG) auditLog.length = MAX_LOG;
-}
-function rollDayIfNeeded() {
-  const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
-  if (state.ordersDate !== today) {
-    state.ordersDate = today;
-    state.ordersToday = 0;
-    if (state.halted && !state.requiresManualRestart) {
-      state.halted = false;
-      state.haltReason = null;
-      audit("halt_cleared", { reason: "new trading day" });
-    }
-  }
-}
-function getState() {
-  rollDayIfNeeded();
-  return {
-    ...state,
-    brokerConfigured: alpacaConfigured(),
-    isPaper: isPaperEndpoint(),
-    llmConfigured: mistralConfigured(),
-    llmBudget: getBudget(),
-    availableStrategies: describeStrategies(),
-    availablePresets: describePresets()
-  };
-}
-function setEnabled(enabled, who = "user") {
-  if (enabled && state.halted && state.requiresManualRestart) {
-    return { ok: false, error: `Cannot enable: ${state.haltReason}. Reset the halt first.` };
-  }
-  state.enabled = Boolean(enabled);
-  audit(enabled ? "bot_enabled" : "bot_disabled", { by: who });
-  return { ok: true, enabled: state.enabled };
-}
-function resetHalt(who = "user") {
-  state.halted = false;
-  state.haltReason = null;
-  state.requiresManualRestart = false;
-  audit("halt_reset", { by: who });
-  return { ok: true };
-}
-function updateConfig(patch = {}) {
-  if (Array.isArray(patch.watchlist)) {
-    state.watchlist = patch.watchlist.map((s) => String(s).toUpperCase()).slice(0, 20);
-  }
-  if (patch.preset && PRESETS[patch.preset]) {
-    const p = PRESETS[patch.preset];
-    state.preset = patch.preset;
-    state.strategies = [...p.strategies];
-    state.threshold = p.threshold;
-  }
-  if (Array.isArray(patch.strategies)) {
-    const next = patch.strategies.filter((k) => STRATEGIES[k]);
-    if (next.length) {
-      state.strategies = next;
-      state.preset = "custom";
-    }
-  }
-  if (patch.threshold != null) {
-    const t = Number(patch.threshold);
-    if (Number.isFinite(t) && t >= 0 && t <= 1) {
-      state.threshold = t;
-      state.preset = "custom";
-    }
-  }
-  if (typeof patch.useLlm === "boolean") state.useLlm = patch.useLlm;
-  if (patch.limits && typeof patch.limits === "object") {
-    const ceilings = {
-      maxPositionPercent: 20,
-      maxSectorPercent: 50,
-      maxGrossExposurePercent: 100,
-      maxDailyLossPercent: 10,
-      maxDrawdownPercent: 25,
-      maxOrdersPerDay: 100,
-      maxOrderPercentOfADV: 5,
-      minOrderValue: 1e4
-    };
-    for (const [k, v] of Object.entries(patch.limits)) {
-      if (!(k in state.limits)) continue;
-      const n = Number(v);
-      if (!Number.isFinite(n) || n < 0) continue;
-      state.limits[k] = Math.min(n, ceilings[k] ?? n);
-    }
-  }
-  audit("config_updated", { patch: Object.keys(patch) });
-  return getState();
-}
-function getDecisions(limit = 50) {
-  return decisions.slice(0, limit);
-}
-function getAudit(limit = 50) {
-  return auditLog.slice(0, limit);
-}
-async function killSwitch(who = "user") {
-  state.enabled = false;
-  state.halted = true;
-  state.haltReason = "Kill switch activated";
-  state.requiresManualRestart = true;
-  audit("kill_switch", { by: who });
-  const cancelled = await cancelAllOrders();
-  const closed = await closeAllPositions();
-  audit("kill_switch_complete", { cancelled, closed });
-  return { ok: true, cancelled, closed };
-}
-async function runCycle({ fetchTechnical, fetchNews, dryRun = false }) {
-  rollDayIfNeeded();
-  const startedAt = (/* @__PURE__ */ new Date()).toISOString();
-  if (!state.enabled && !dryRun) {
-    return { ok: false, skipped: "Bot is off", startedAt };
-  }
-  if (!alpacaConfigured()) {
-    return { ok: false, skipped: "Broker not configured", startedAt };
-  }
-  let account, positions, clock;
-  try {
-    [account, positions, clock] = await Promise.all([
-      getAccount(),
-      getPositions(),
-      getClock()
-    ]);
-  } catch (e) {
-    state.lastError = e.message;
-    audit("cycle_error", { error: e.message });
-    return { ok: false, error: e.message, startedAt };
-  }
-  state.peakEquity = state.peakEquity == null ? account.equity : Math.max(state.peakEquity, account.equity);
-  const drawdownPercent = state.peakEquity > 0 ? (state.peakEquity - account.equity) / state.peakEquity * 100 : 0;
-  const posBySymbol = Object.fromEntries(positions.map((p) => [p.symbol, p]));
-  const riskState = {
-    enabled: state.enabled,
-    halted: state.halted,
-    equity: account.equity,
-    dailyPnlPercent: account.dailyPnlPercent,
-    drawdownPercent,
-    ordersToday: state.ordersToday,
-    marketOpen: clock.isOpen,
-    positions: posBySymbol
-  };
-  const halt = checkHaltConditions(riskState, state.limits);
-  if (halt.halt && !state.halted) {
-    state.halted = true;
-    state.haltReason = halt.detail;
-    state.requiresManualRestart = halt.requiresManualRestart;
-    audit("auto_halt", { reason: halt.reason, detail: halt.detail });
-  }
-  const results = [];
-  for (const symbol of state.watchlist) {
-    try {
-      const technical = await fetchTechnical(symbol);
-      if (!technical || technical.available === false) {
-        results.push({ symbol, action: "SKIP", reason: "No technical data" });
-        continue;
-      }
-      let decision = ensemble(technical, state.strategies, state.threshold);
-      if (state.useLlm && mistralConfigured() && decision.action !== "HOLD") {
-        const news = fetchNews ? await fetchNews(symbol).catch(() => []) : [];
-        const review = await reviewDecision({
-          symbol,
-          decision,
-          technical,
-          news,
-          position: posBySymbol[symbol] || null
-        });
-        decision = applyReview(decision, review);
-      }
-      const price = technical.price;
-      const held = posBySymbol[symbol];
-      let order = null, gate = null, submitted = null;
-      if (decision.action === "BUY") {
-        const qty = sizePosition(decision, account.equity, price, state.limits.maxPositionPercent);
-        if (qty > 0) order = { symbol, side: "buy", qty, price, avgDailyVolume: technical.volume?.avg20 };
-      } else if (decision.action === "SELL" && held?.qty > 0) {
-        order = { symbol, side: "sell", qty: held.qty, price };
-      }
-      if (order) {
-        gate = evaluateOrder(order, riskState, state.limits);
-        if (gate.approved && !dryRun) {
-          submitted = await submitOrder({
-            symbol,
-            side: order.side,
-            qty: gate.adjustedQty,
-            clientOrderId: `qb-${symbol}-${Date.now()}`
-          });
-          state.ordersToday++;
-          riskState.ordersToday = state.ordersToday;
-          audit("order_submitted", { symbol, side: order.side, qty: gate.adjustedQty, id: submitted.id });
-        }
-      }
-      const record = {
-        at: (/* @__PURE__ */ new Date()).toISOString(),
-        symbol,
-        action: decision.action,
-        confidence: decision.confidence,
-        agreement: decision.agreement,
-        rationale: decision.rationale,
-        signals: decision.signals,
-        llm: decision.llm || null,
-        vetoed: decision.vetoed || false,
-        damped: decision.damped || false,
-        order,
-        gate,
-        submitted,
-        dryRun
-      };
-      results.push(record);
-      decisions.unshift(record);
-      if (decisions.length > MAX_LOG) decisions.length = MAX_LOG;
-    } catch (e) {
-      results.push({ symbol, action: "ERROR", error: e.message });
-      audit("symbol_error", { symbol, error: e.message });
-    }
-  }
-  state.lastRun = startedAt;
-  state.lastError = null;
-  return {
-    ok: true,
-    startedAt,
-    finishedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    dryRun,
-    account: { equity: account.equity, cash: account.cash, dailyPnlPercent: +account.dailyPnlPercent.toFixed(3), drawdownPercent: +drawdownPercent.toFixed(3) },
-    marketOpen: clock.isOpen,
-    halted: state.halted,
-    haltReason: state.haltReason,
-    results
-  };
-}
-
 // bot/indicators.js
 function sma(values, period) {
   if (values.length < period) return null;
@@ -1862,449 +1487,6 @@ function computeTechnical(candles, symbol = "") {
     candleCount: candles.length
   };
   return result;
-}
-
-// bot/statistics.js
-var EULER_MASCHERONI = 0.5772156649015329;
-var mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
-function stdev(a, sample = true) {
-  if (a.length < 2) return 0;
-  const m = mean(a);
-  return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / (a.length - (sample ? 1 : 0)));
-}
-function skewness(a) {
-  const n = a.length;
-  if (n < 3) return 0;
-  const m = mean(a), sd = stdev(a, false);
-  if (!sd) return 0;
-  return a.reduce((s, v) => s + ((v - m) / sd) ** 3, 0) / n;
-}
-function kurtosis(a) {
-  const n = a.length;
-  if (n < 4) return 3;
-  const m = mean(a), sd = stdev(a, false);
-  if (!sd) return 3;
-  return a.reduce((s, v) => s + ((v - m) / sd) ** 4, 0) / n;
-}
-function invNorm(p) {
-  if (p <= 0) return -Infinity;
-  if (p >= 1) return Infinity;
-  const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687, 138.357751867269, -30.66479806614716, 2.506628277459239];
-  const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866, 66.80131188771972, -13.28068155288572];
-  const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
-  const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996, 3.754408661907416];
-  const pl = 0.02425;
-  if (p < pl) {
-    const q2 = Math.sqrt(-2 * Math.log(p));
-    return (((((c[0] * q2 + c[1]) * q2 + c[2]) * q2 + c[3]) * q2 + c[4]) * q2 + c[5]) / ((((d[0] * q2 + d[1]) * q2 + d[2]) * q2 + d[3]) * q2 + 1);
-  }
-  if (p > 1 - pl) {
-    const q2 = Math.sqrt(-2 * Math.log(1 - p));
-    return -(((((c[0] * q2 + c[1]) * q2 + c[2]) * q2 + c[3]) * q2 + c[4]) * q2 + c[5]) / ((((d[0] * q2 + d[1]) * q2 + d[2]) * q2 + d[3]) * q2 + 1);
-  }
-  const q = p - 0.5, r = q * q;
-  return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
-}
-function sharpe(returns, rf = 0) {
-  if (returns.length < 2) return 0;
-  const sd = stdev(returns);
-  return sd ? (mean(returns) - rf) / sd : 0;
-}
-function sortino(returns, rf = 0) {
-  if (returns.length < 2) return 0;
-  const downside = returns.filter((r) => r < rf).map((r) => (r - rf) ** 2);
-  if (!downside.length) return Infinity;
-  const dd = Math.sqrt(downside.reduce((a, b) => a + b, 0) / returns.length);
-  return dd ? (mean(returns) - rf) / dd : 0;
-}
-function maxDrawdown(equity) {
-  let peak = -Infinity, maxDd = 0, peakIdx = 0, troughIdx = 0, curPeak = 0;
-  for (let i = 0; i < equity.length; i++) {
-    if (equity[i] > peak) {
-      peak = equity[i];
-      curPeak = i;
-    }
-    const dd = peak > 0 ? (peak - equity[i]) / peak : 0;
-    if (dd > maxDd) {
-      maxDd = dd;
-      peakIdx = curPeak;
-      troughIdx = i;
-    }
-  }
-  return { maxDrawdown: maxDd, peakIndex: peakIdx, troughIndex: troughIdx };
-}
-function probabilisticSharpe(observedSR, benchmarkSR, n, skew, kurt) {
-  if (n < 2) return null;
-  const denom = 1 - skew * observedSR + (kurt - 1) / 4 * observedSR * observedSR;
-  if (denom <= 0) return null;
-  return normCdf((observedSR - benchmarkSR) * Math.sqrt(n - 1) / Math.sqrt(denom));
-}
-function expectedMaxSharpe(nTrials, sharpeVariance) {
-  if (nTrials < 2) return 0;
-  const sd = Math.sqrt(Math.max(sharpeVariance, 0));
-  if (!sd) return 0;
-  const a = invNorm(1 - 1 / nTrials);
-  const b = invNorm(1 - 1 / (nTrials * Math.E));
-  return sd * ((1 - EULER_MASCHERONI) * a + EULER_MASCHERONI * b);
-}
-function deflatedSharpe(returns, nTrials, sharpeVariance = null) {
-  if (returns.length < 4) return null;
-  const sr = sharpe(returns);
-  const sk = skewness(returns);
-  const ku = kurtosis(returns);
-  const variance = sharpeVariance != null ? sharpeVariance : (1 + 0.5 * sr * sr) / (returns.length - 1);
-  const sr0 = expectedMaxSharpe(nTrials, variance);
-  const dsr = probabilisticSharpe(sr, sr0, returns.length, sk, ku);
-  return { sharpe: sr, expectedMaxSharpe: sr0, deflatedSharpe: dsr, skew: sk, kurtosis: ku, nTrials };
-}
-function probabilityOfBacktestOverfitting(returnsMatrix, blocks = 8) {
-  const nStrat = returnsMatrix.length;
-  if (nStrat < 2) return null;
-  const T = Math.min(...returnsMatrix.map((r) => r.length));
-  if (T < blocks * 2) return null;
-  const S = blocks % 2 === 0 ? blocks : blocks - 1;
-  const blockSize = Math.floor(T / S);
-  const blockIdx = Array.from({ length: S }, (_, i) => i);
-  const combos = [];
-  const choose = (start, acc) => {
-    if (acc.length === S / 2) {
-      combos.push([...acc]);
-      return;
-    }
-    for (let i = start; i < S; i++) {
-      acc.push(i);
-      choose(i + 1, acc);
-      acc.pop();
-    }
-  };
-  choose(0, []);
-  const sliceBlocks = (row, blocksWanted) => {
-    const out = [];
-    for (const b of blocksWanted) {
-      out.push(...row.slice(b * blockSize, (b + 1) * blockSize));
-    }
-    return out;
-  };
-  let overfitCount = 0;
-  const logits = [];
-  for (const inSample of combos) {
-    const outSample = blockIdx.filter((b) => !inSample.includes(b));
-    const isSharpes = returnsMatrix.map((r) => sharpe(sliceBlocks(r, inSample)));
-    const oosSharpes = returnsMatrix.map((r) => sharpe(sliceBlocks(r, outSample)));
-    let best = 0;
-    for (let i = 1; i < nStrat; i++) if (isSharpes[i] > isSharpes[best]) best = i;
-    const rank = oosSharpes.filter((s) => s <= oosSharpes[best]).length;
-    const relRank = rank / (nStrat + 1);
-    const w = Math.min(Math.max(relRank, 1e-6), 1 - 1e-6);
-    logits.push(Math.log(w / (1 - w)));
-    if (relRank <= 0.5) overfitCount++;
-  }
-  return {
-    pbo: overfitCount / combos.length,
-    splits: combos.length,
-    medianLogit: logits.sort((a, b) => a - b)[Math.floor(logits.length / 2)]
-  };
-}
-function summarise(equityCurve, periodReturns, periodsPerYear = 252, rfAnnual = 0.045) {
-  const n = periodReturns.length;
-  if (!n || equityCurve.length < 2) return null;
-  const start = equityCurve[0], end = equityCurve[equityCurve.length - 1];
-  const years = n / periodsPerYear;
-  const totalReturn = (end - start) / start;
-  const cagr = years > 0 && start > 0 ? Math.pow(end / start, 1 / years) - 1 : 0;
-  const rfPeriod = rfAnnual / periodsPerYear;
-  const sr = sharpe(periodReturns, rfPeriod);
-  const so = sortino(periodReturns, rfPeriod);
-  const dd = maxDrawdown(equityCurve);
-  const vol = stdev(periodReturns) * Math.sqrt(periodsPerYear);
-  const wins = periodReturns.filter((r) => r > 0);
-  const losses = periodReturns.filter((r) => r < 0);
-  const grossWin = wins.reduce((a, b) => a + b, 0);
-  const grossLoss = Math.abs(losses.reduce((a, b) => a + b, 0));
-  return {
-    totalReturn: +(totalReturn * 100).toFixed(2),
-    cagr: +(cagr * 100).toFixed(2),
-    volatility: +(vol * 100).toFixed(2),
-    // Annualise Sharpe/Sortino from per-period values.
-    sharpe: +(sr * Math.sqrt(periodsPerYear)).toFixed(3),
-    sortino: Number.isFinite(so) ? +(so * Math.sqrt(periodsPerYear)).toFixed(3) : null,
-    maxDrawdown: +(dd.maxDrawdown * 100).toFixed(2),
-    // Return earned per unit of worst-case pain.
-    calmar: dd.maxDrawdown > 0 ? +(cagr / dd.maxDrawdown).toFixed(3) : null,
-    winRate: +(wins.length / n * 100).toFixed(1),
-    profitFactor: grossLoss > 0 ? +(grossWin / grossLoss).toFixed(3) : null,
-    periods: n,
-    years: +years.toFixed(2)
-  };
-}
-
-// bot/backtest.js
-var DEFAULT_COSTS = {
-  commissionPerShare: 5e-3,
-  // typical retail per-share commission
-  commissionMinimum: 1,
-  slippageBps: 5,
-  // 5 basis points of adverse price movement
-  spreadBps: 2
-  // half-spread paid on entry and exit
-};
-function fillPrice(price, side, costs) {
-  const adverse = (costs.slippageBps + costs.spreadBps) / 1e4;
-  return side === "buy" ? price * (1 + adverse) : price * (1 - adverse);
-}
-function commission(shares, costs) {
-  return Math.max(shares * costs.commissionPerShare, costs.commissionMinimum);
-}
-function runBacktest(candles, options = {}) {
-  const {
-    symbol = "",
-    strategies = Object.keys(STRATEGIES),
-    threshold = 0.15,
-    initialCapital = 1e5,
-    maxPositionPercent = 20,
-    costs = DEFAULT_COSTS,
-    warmup = 200,
-    periodsPerYear = 252,
-    rfAnnual = 0.045
-  } = options;
-  if (!candles || candles.length < warmup + 20) {
-    return { available: false, message: `Need at least ${warmup + 20} bars, got ${candles?.length || 0}` };
-  }
-  let cash = initialCapital;
-  let shares = 0;
-  const equityCurve = [];
-  const trades = [];
-  const decisions2 = [];
-  let totalCommission = 0, totalSlippage = 0;
-  for (let t = warmup; t < candles.length; t++) {
-    const visible = candles.slice(0, t + 1);
-    const bar = candles[t];
-    const ta = computeTechnical(visible, symbol);
-    const decision = ta.available ? ensemble(ta, strategies, threshold) : { action: "HOLD", confidence: 0, signals: [] };
-    const nextBar = candles[t + 1];
-    if (nextBar) {
-      const equityNow = cash + shares * bar.close;
-      if (decision.action === "BUY" && shares === 0) {
-        const qty = sizePosition(decision, equityNow, nextBar.open, maxPositionPercent);
-        if (qty > 0) {
-          const px = fillPrice(nextBar.open, "buy", costs);
-          const comm = commission(qty, costs);
-          const cost = qty * px + comm;
-          if (cost <= cash) {
-            const slip = qty * (px - nextBar.open);
-            cash -= cost;
-            shares += qty;
-            totalCommission += comm;
-            totalSlippage += slip;
-            trades.push({
-              time: nextBar.time,
-              side: "buy",
-              qty,
-              price: +px.toFixed(4),
-              reference: nextBar.open,
-              commission: +comm.toFixed(2),
-              slippage: +slip.toFixed(2),
-              confidence: decision.confidence,
-              rationale: decision.rationale
-            });
-          }
-        }
-      } else if (decision.action === "SELL" && shares > 0) {
-        const px = fillPrice(nextBar.open, "sell", costs);
-        const comm = commission(shares, costs);
-        const slip = shares * (nextBar.open - px);
-        cash += shares * px - comm;
-        totalCommission += comm;
-        totalSlippage += slip;
-        trades.push({
-          time: nextBar.time,
-          side: "sell",
-          qty: shares,
-          price: +px.toFixed(4),
-          reference: nextBar.open,
-          commission: +comm.toFixed(2),
-          slippage: +slip.toFixed(2),
-          confidence: decision.confidence,
-          rationale: decision.rationale
-        });
-        shares = 0;
-      }
-    }
-    equityCurve.push(cash + shares * bar.close);
-    decisions2.push({ time: bar.time, action: decision.action, confidence: decision.confidence });
-  }
-  const last = candles[candles.length - 1];
-  const finalEquity = cash + shares * last.close;
-  const periodReturns = [];
-  for (let i = 1; i < equityCurve.length; i++) {
-    periodReturns.push((equityCurve[i] - equityCurve[i - 1]) / equityCurve[i - 1]);
-  }
-  const stats = summarise(equityCurve, periodReturns, periodsPerYear, rfAnnual);
-  const bhStart = candles[warmup];
-  const bhEntry = fillPrice(bhStart.close, "buy", costs);
-  const bhShares = Math.floor(initialCapital / bhEntry);
-  const bhCash = initialCapital - bhShares * bhEntry - commission(bhShares, costs);
-  const bhCurve = candles.slice(warmup).map((c) => bhCash + bhShares * c.close);
-  const bhReturns = [];
-  for (let i = 1; i < bhCurve.length; i++) {
-    bhReturns.push((bhCurve[i] - bhCurve[i - 1]) / bhCurve[i - 1]);
-  }
-  const bhStats = summarise(bhCurve, bhReturns, periodsPerYear, rfAnnual);
-  return {
-    available: true,
-    symbol,
-    config: { strategies, threshold, initialCapital, maxPositionPercent, costs, warmup },
-    bars: equityCurve.length,
-    from: candles[warmup]?.time,
-    to: last.time,
-    finalEquity: +finalEquity.toFixed(2),
-    stats,
-    benchmark: bhStats,
-    // The number that decides whether the strategy was worth running at all.
-    excessReturn: stats && bhStats ? +(stats.totalReturn - bhStats.totalReturn).toFixed(2) : null,
-    beatBenchmark: stats && bhStats ? stats.totalReturn > bhStats.totalReturn : null,
-    trades: trades.length,
-    tradeLog: trades.slice(-40),
-    costs: {
-      totalCommission: +totalCommission.toFixed(2),
-      totalSlippage: +totalSlippage.toFixed(2),
-      totalCost: +(totalCommission + totalSlippage).toFixed(2),
-      // Costs as a share of starting capital — the drag a frictionless
-      // backtest would have hidden entirely.
-      costDragPercent: +((totalCommission + totalSlippage) / initialCapital * 100).toFixed(2)
-    },
-    equityCurve: equityCurve.map((v, i) => ({
-      time: candles[warmup + i].time,
-      equity: +v.toFixed(2),
-      benchmark: bhCurve[i] != null ? +bhCurve[i].toFixed(2) : null
-    })),
-    periodReturns
-  };
-}
-function walkForward(candles, options = {}) {
-  const { folds = 4, warmup = 200, ...rest } = options;
-  const usable = candles.length - warmup;
-  if (usable < folds * 60) {
-    return { available: false, message: `Need ~${folds * 60 + warmup} bars for ${folds} folds` };
-  }
-  const foldSize = Math.floor(usable / folds);
-  const results = [];
-  for (let f = 0; f < folds; f++) {
-    const end = warmup + foldSize * (f + 1);
-    const start = warmup + foldSize * f;
-    const slice = candles.slice(0, end);
-    const r = runBacktest(slice, { ...rest, warmup: start });
-    if (r.available) {
-      results.push({
-        fold: f + 1,
-        from: candles[start]?.time,
-        to: candles[end - 1]?.time,
-        totalReturn: r.stats?.totalReturn ?? null,
-        sharpe: r.stats?.sharpe ?? null,
-        maxDrawdown: r.stats?.maxDrawdown ?? null,
-        benchmarkReturn: r.benchmark?.totalReturn ?? null,
-        beatBenchmark: r.beatBenchmark,
-        trades: r.trades
-      });
-    }
-  }
-  if (!results.length) return { available: false, message: "No fold produced a result" };
-  const rets = results.map((r) => r.totalReturn).filter((v) => v != null);
-  const beats = results.filter((r) => r.beatBenchmark).length;
-  return {
-    available: true,
-    folds: results,
-    consistency: {
-      foldsBeatingBenchmark: beats,
-      totalFolds: results.length,
-      // Persistence across folds is the point. A strategy that wins once and
-      // loses three times has not shown anything.
-      beatRate: +(beats / results.length * 100).toFixed(1),
-      meanReturn: rets.length ? +(rets.reduce((a, b) => a + b, 0) / rets.length).toFixed(2) : null,
-      returnStdev: rets.length > 1 ? +stdev(rets).toFixed(2) : null,
-      worstFold: rets.length ? +Math.min(...rets).toFixed(2) : null,
-      bestFold: rets.length ? +Math.max(...rets).toFixed(2) : null
-    }
-  };
-}
-function sweepStrategies(candles, options = {}) {
-  const { thresholds = [0.1, 0.15, 0.25], ...rest } = options;
-  const keys = Object.keys(STRATEGIES);
-  const combos = [
-    ...keys.map((k) => [k]),
-    ["trend", "consensus"],
-    ["rsi", "bollinger"],
-    ["trend", "macd"],
-    keys
-  ];
-  const variants = [];
-  for (const strategies of combos) {
-    for (const threshold of thresholds) {
-      const r = runBacktest(candles, { ...rest, strategies, threshold });
-      if (r.available && r.stats) {
-        variants.push({
-          strategies,
-          threshold,
-          totalReturn: r.stats.totalReturn,
-          sharpe: r.stats.sharpe,
-          maxDrawdown: r.stats.maxDrawdown,
-          trades: r.trades,
-          beatBenchmark: r.beatBenchmark,
-          periodReturns: r.periodReturns
-        });
-      }
-    }
-  }
-  if (!variants.length) return { available: false, message: "No variant produced a result" };
-  const ranked = [...variants].sort((a, b) => b.sharpe - a.sharpe);
-  const best = ranked[0];
-  const sharpes = variants.map((v) => v.sharpe);
-  const sharpeVar = sharpes.length > 1 ? Math.pow(stdev(sharpes), 2) : 0;
-  const perPeriod = best.periodReturns;
-  const dsr = deflatedSharpe(
-    perPeriod,
-    variants.length,
-    sharpeVar / (options.periodsPerYear || 252)
-  );
-  const pbo = probabilityOfBacktestOverfitting(
-    variants.map((v) => v.periodReturns),
-    6
-  );
-  return {
-    available: true,
-    trials: variants.length,
-    best: {
-      strategies: best.strategies,
-      threshold: best.threshold,
-      totalReturn: best.totalReturn,
-      sharpe: best.sharpe,
-      maxDrawdown: best.maxDrawdown,
-      trades: best.trades,
-      beatBenchmark: best.beatBenchmark
-    },
-    ranking: ranked.slice(0, 10).map(({ periodReturns, ...v }) => v),
-    overfitting: {
-      deflatedSharpe: dsr?.deflatedSharpe ?? null,
-      expectedMaxSharpeByLuck: dsr?.expectedMaxSharpe ?? null,
-      pbo: pbo?.pbo ?? null,
-      pboSplits: pbo?.splits ?? null,
-      // Plain-language verdict, because the numbers are easy to misread.
-      verdict: verdictFor(dsr?.deflatedSharpe, pbo?.pbo)
-    }
-  };
-}
-function verdictFor(dsr, pbo) {
-  if (dsr == null && pbo == null) return "Not enough data to judge.";
-  if (dsr != null && dsr < 0.9) {
-    return "Not distinguishable from luck \u2014 the best variant is about what you would expect from trying this many.";
-  }
-  if (pbo != null && pbo > 0.5) {
-    return "High overfitting risk \u2014 the in-sample winner usually underperforms out of sample.";
-  }
-  if (dsr != null && dsr >= 0.95 && (pbo == null || pbo < 0.3)) {
-    return "Survives deflation and shows low overfitting risk. Still needs forward testing.";
-  }
-  return "Mixed evidence \u2014 treat with caution and forward test before trusting it.";
 }
 
 // bot/features.js
@@ -2653,6 +1835,180 @@ function modelStrategy(model2, candles, t, { buyThreshold = 0.55, sellThreshold 
   return { action: "HOLD", confidence: 0, rationale: `Model P(up)=${p.toFixed(2)} \u2014 near coin flip` };
 }
 
+// bot/statistics.js
+var EULER_MASCHERONI = 0.5772156649015329;
+var mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+function stdev(a, sample = true) {
+  if (a.length < 2) return 0;
+  const m = mean(a);
+  return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / (a.length - (sample ? 1 : 0)));
+}
+function skewness(a) {
+  const n = a.length;
+  if (n < 3) return 0;
+  const m = mean(a), sd = stdev(a, false);
+  if (!sd) return 0;
+  return a.reduce((s, v) => s + ((v - m) / sd) ** 3, 0) / n;
+}
+function kurtosis(a) {
+  const n = a.length;
+  if (n < 4) return 3;
+  const m = mean(a), sd = stdev(a, false);
+  if (!sd) return 3;
+  return a.reduce((s, v) => s + ((v - m) / sd) ** 4, 0) / n;
+}
+function invNorm(p) {
+  if (p <= 0) return -Infinity;
+  if (p >= 1) return Infinity;
+  const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687, 138.357751867269, -30.66479806614716, 2.506628277459239];
+  const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866, 66.80131188771972, -13.28068155288572];
+  const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
+  const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996, 3.754408661907416];
+  const pl = 0.02425;
+  if (p < pl) {
+    const q2 = Math.sqrt(-2 * Math.log(p));
+    return (((((c[0] * q2 + c[1]) * q2 + c[2]) * q2 + c[3]) * q2 + c[4]) * q2 + c[5]) / ((((d[0] * q2 + d[1]) * q2 + d[2]) * q2 + d[3]) * q2 + 1);
+  }
+  if (p > 1 - pl) {
+    const q2 = Math.sqrt(-2 * Math.log(1 - p));
+    return -(((((c[0] * q2 + c[1]) * q2 + c[2]) * q2 + c[3]) * q2 + c[4]) * q2 + c[5]) / ((((d[0] * q2 + d[1]) * q2 + d[2]) * q2 + d[3]) * q2 + 1);
+  }
+  const q = p - 0.5, r = q * q;
+  return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+}
+function sharpe(returns, rf = 0) {
+  if (returns.length < 2) return 0;
+  const sd = stdev(returns);
+  return sd ? (mean(returns) - rf) / sd : 0;
+}
+function sortino(returns, rf = 0) {
+  if (returns.length < 2) return 0;
+  const downside = returns.filter((r) => r < rf).map((r) => (r - rf) ** 2);
+  if (!downside.length) return Infinity;
+  const dd = Math.sqrt(downside.reduce((a, b) => a + b, 0) / returns.length);
+  return dd ? (mean(returns) - rf) / dd : 0;
+}
+function maxDrawdown(equity) {
+  let peak = -Infinity, maxDd = 0, peakIdx = 0, troughIdx = 0, curPeak = 0;
+  for (let i = 0; i < equity.length; i++) {
+    if (equity[i] > peak) {
+      peak = equity[i];
+      curPeak = i;
+    }
+    const dd = peak > 0 ? (peak - equity[i]) / peak : 0;
+    if (dd > maxDd) {
+      maxDd = dd;
+      peakIdx = curPeak;
+      troughIdx = i;
+    }
+  }
+  return { maxDrawdown: maxDd, peakIndex: peakIdx, troughIndex: troughIdx };
+}
+function probabilisticSharpe(observedSR, benchmarkSR, n, skew, kurt) {
+  if (n < 2) return null;
+  const denom = 1 - skew * observedSR + (kurt - 1) / 4 * observedSR * observedSR;
+  if (denom <= 0) return null;
+  return normCdf((observedSR - benchmarkSR) * Math.sqrt(n - 1) / Math.sqrt(denom));
+}
+function expectedMaxSharpe(nTrials, sharpeVariance) {
+  if (nTrials < 2) return 0;
+  const sd = Math.sqrt(Math.max(sharpeVariance, 0));
+  if (!sd) return 0;
+  const a = invNorm(1 - 1 / nTrials);
+  const b = invNorm(1 - 1 / (nTrials * Math.E));
+  return sd * ((1 - EULER_MASCHERONI) * a + EULER_MASCHERONI * b);
+}
+function deflatedSharpe(returns, nTrials, sharpeVariance = null) {
+  if (returns.length < 4) return null;
+  const sr = sharpe(returns);
+  const sk = skewness(returns);
+  const ku = kurtosis(returns);
+  const variance = sharpeVariance != null ? sharpeVariance : (1 + 0.5 * sr * sr) / (returns.length - 1);
+  const sr0 = expectedMaxSharpe(nTrials, variance);
+  const dsr = probabilisticSharpe(sr, sr0, returns.length, sk, ku);
+  return { sharpe: sr, expectedMaxSharpe: sr0, deflatedSharpe: dsr, skew: sk, kurtosis: ku, nTrials };
+}
+function probabilityOfBacktestOverfitting(returnsMatrix, blocks = 8) {
+  const nStrat = returnsMatrix.length;
+  if (nStrat < 2) return null;
+  const T = Math.min(...returnsMatrix.map((r) => r.length));
+  if (T < blocks * 2) return null;
+  const S = blocks % 2 === 0 ? blocks : blocks - 1;
+  const blockSize = Math.floor(T / S);
+  const blockIdx = Array.from({ length: S }, (_, i) => i);
+  const combos = [];
+  const choose = (start, acc) => {
+    if (acc.length === S / 2) {
+      combos.push([...acc]);
+      return;
+    }
+    for (let i = start; i < S; i++) {
+      acc.push(i);
+      choose(i + 1, acc);
+      acc.pop();
+    }
+  };
+  choose(0, []);
+  const sliceBlocks = (row, blocksWanted) => {
+    const out = [];
+    for (const b of blocksWanted) {
+      out.push(...row.slice(b * blockSize, (b + 1) * blockSize));
+    }
+    return out;
+  };
+  let overfitCount = 0;
+  const logits = [];
+  for (const inSample of combos) {
+    const outSample = blockIdx.filter((b) => !inSample.includes(b));
+    const isSharpes = returnsMatrix.map((r) => sharpe(sliceBlocks(r, inSample)));
+    const oosSharpes = returnsMatrix.map((r) => sharpe(sliceBlocks(r, outSample)));
+    let best = 0;
+    for (let i = 1; i < nStrat; i++) if (isSharpes[i] > isSharpes[best]) best = i;
+    const rank = oosSharpes.filter((s) => s <= oosSharpes[best]).length;
+    const relRank = rank / (nStrat + 1);
+    const w = Math.min(Math.max(relRank, 1e-6), 1 - 1e-6);
+    logits.push(Math.log(w / (1 - w)));
+    if (relRank <= 0.5) overfitCount++;
+  }
+  return {
+    pbo: overfitCount / combos.length,
+    splits: combos.length,
+    medianLogit: logits.sort((a, b) => a - b)[Math.floor(logits.length / 2)]
+  };
+}
+function summarise(equityCurve, periodReturns, periodsPerYear = 252, rfAnnual = 0.045) {
+  const n = periodReturns.length;
+  if (!n || equityCurve.length < 2) return null;
+  const start = equityCurve[0], end = equityCurve[equityCurve.length - 1];
+  const years = n / periodsPerYear;
+  const totalReturn = (end - start) / start;
+  const cagr = years > 0 && start > 0 ? Math.pow(end / start, 1 / years) - 1 : 0;
+  const rfPeriod = rfAnnual / periodsPerYear;
+  const sr = sharpe(periodReturns, rfPeriod);
+  const so = sortino(periodReturns, rfPeriod);
+  const dd = maxDrawdown(equityCurve);
+  const vol = stdev(periodReturns) * Math.sqrt(periodsPerYear);
+  const wins = periodReturns.filter((r) => r > 0);
+  const losses = periodReturns.filter((r) => r < 0);
+  const grossWin = wins.reduce((a, b) => a + b, 0);
+  const grossLoss = Math.abs(losses.reduce((a, b) => a + b, 0));
+  return {
+    totalReturn: +(totalReturn * 100).toFixed(2),
+    cagr: +(cagr * 100).toFixed(2),
+    volatility: +(vol * 100).toFixed(2),
+    // Annualise Sharpe/Sortino from per-period values.
+    sharpe: +(sr * Math.sqrt(periodsPerYear)).toFixed(3),
+    sortino: Number.isFinite(so) ? +(so * Math.sqrt(periodsPerYear)).toFixed(3) : null,
+    maxDrawdown: +(dd.maxDrawdown * 100).toFixed(2),
+    // Return earned per unit of worst-case pain.
+    calmar: dd.maxDrawdown > 0 ? +(cagr / dd.maxDrawdown).toFixed(3) : null,
+    winRate: +(wins.length / n * 100).toFixed(1),
+    profitFactor: grossLoss > 0 ? +(grossWin / grossLoss).toFixed(3) : null,
+    periods: n,
+    years: +years.toFixed(2)
+  };
+}
+
 // bot/persistence.js
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -2871,6 +2227,699 @@ function unpublish(modelId) {
   if (m) m.published = false;
   persist({ trained, published });
   return { ok: true };
+}
+
+// bot/alpaca.js
+var endpoint = () => process.env.ALPACA_ENDPOINT || "https://paper-api.alpaca.markets/v2";
+var key2 = () => process.env.ALPACA_API_KEY;
+var secret = () => process.env.ALPACA_SECRET_KEY;
+var isPaperEndpoint = (url = endpoint()) => /paper-api\.alpaca\.markets/.test(url);
+var alpacaConfigured = () => Boolean(key2() && secret());
+async function alpaca(path, options = {}) {
+  if (!alpacaConfigured()) throw new Error("Alpaca credentials not configured");
+  const resp = await fetch(`${endpoint()}${path}`, {
+    ...options,
+    headers: {
+      "APCA-API-KEY-ID": key2(),
+      "APCA-API-SECRET-KEY": secret(),
+      "Content-Type": "application/json",
+      ...options.headers || {}
+    }
+  });
+  const text = await resp.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = { raw: text };
+  }
+  if (!resp.ok) {
+    const msg = body?.message || body?.raw || `HTTP ${resp.status}`;
+    throw new Error(`Alpaca ${path}: ${msg}`);
+  }
+  return body;
+}
+async function getAccount() {
+  const a = await alpaca("/account");
+  return {
+    status: a.status,
+    equity: parseFloat(a.equity),
+    lastEquity: parseFloat(a.last_equity),
+    cash: parseFloat(a.cash),
+    buyingPower: parseFloat(a.buying_power),
+    tradingBlocked: a.trading_blocked,
+    accountBlocked: a.account_blocked,
+    currency: a.currency,
+    // Same-day P&L against the previous close.
+    dailyPnl: parseFloat(a.equity) - parseFloat(a.last_equity),
+    dailyPnlPercent: parseFloat(a.last_equity) ? (parseFloat(a.equity) - parseFloat(a.last_equity)) / parseFloat(a.last_equity) * 100 : 0
+  };
+}
+async function getPositions() {
+  const rows = await alpaca("/positions");
+  return (rows || []).map((p) => ({
+    symbol: p.symbol,
+    qty: parseFloat(p.qty),
+    side: p.side,
+    avgEntryPrice: parseFloat(p.avg_entry_price),
+    marketValue: parseFloat(p.market_value),
+    costBasis: parseFloat(p.cost_basis),
+    unrealisedPnl: parseFloat(p.unrealized_pl),
+    unrealisedPercent: parseFloat(p.unrealized_plpc) * 100,
+    currentPrice: parseFloat(p.current_price)
+  }));
+}
+async function getClock() {
+  const c = await alpaca("/clock");
+  return { isOpen: c.is_open, nextOpen: c.next_open, nextClose: c.next_close, timestamp: c.timestamp };
+}
+async function getOrders(status = "all", limit = 50) {
+  const rows = await alpaca(`/orders?status=${status}&limit=${limit}&direction=desc`);
+  return (rows || []).map((o) => ({
+    id: o.id,
+    clientOrderId: o.client_order_id,
+    symbol: o.symbol,
+    side: o.side,
+    qty: parseFloat(o.qty),
+    filledQty: parseFloat(o.filled_qty || 0),
+    type: o.type,
+    status: o.status,
+    submittedAt: o.submitted_at,
+    filledAt: o.filled_at,
+    filledAvgPrice: o.filled_avg_price ? parseFloat(o.filled_avg_price) : null
+  }));
+}
+async function submitOrder({ symbol, side, qty, type = "market", timeInForce = "day", clientOrderId }) {
+  const body = {
+    symbol,
+    side,
+    qty: String(qty),
+    type,
+    time_in_force: timeInForce,
+    ...clientOrderId ? { client_order_id: clientOrderId } : {}
+  };
+  const o = await alpaca("/orders", { method: "POST", body: JSON.stringify(body) });
+  return {
+    id: o.id,
+    clientOrderId: o.client_order_id,
+    symbol: o.symbol,
+    side: o.side,
+    qty: parseFloat(o.qty),
+    type: o.type,
+    status: o.status,
+    submittedAt: o.submitted_at
+  };
+}
+async function cancelAllOrders() {
+  try {
+    const r = await alpaca("/orders", { method: "DELETE" });
+    return { cancelled: Array.isArray(r) ? r.length : 0 };
+  } catch (e) {
+    return { cancelled: 0, error: e.message };
+  }
+}
+async function closeAllPositions() {
+  try {
+    const r = await alpaca("/positions?cancel_orders=true", { method: "DELETE" });
+    const rows = Array.isArray(r) ? r : [];
+    return {
+      attempted: rows.length,
+      succeeded: rows.filter((x) => x.status >= 200 && x.status < 300).length,
+      failures: rows.filter((x) => !(x.status >= 200 && x.status < 300)).map((x) => x.symbol)
+    };
+  } catch (e) {
+    return { attempted: 0, succeeded: 0, failures: [], error: e.message };
+  }
+}
+
+// bot/engine.js
+var state = {
+  enabled: false,
+  // OFF by default. Always.
+  halted: false,
+  haltReason: null,
+  requiresManualRestart: false,
+  mode: "paper",
+  watchlist: ["AAPL", "MSFT", "NVDA", "SPY", "QQQ"],
+  strategies: PRESETS.balanced.strategies,
+  threshold: PRESETS.balanced.threshold,
+  preset: "balanced",
+  // null = decide with the rule-strategy ensemble; otherwise the id of a
+  // trained ML model from the Model Lab drives every decision instead.
+  activeModelId: null,
+  useLlm: true,
+  limits: { ...DEFAULT_LIMITS },
+  ordersToday: 0,
+  ordersDate: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
+  peakEquity: null,
+  lastRun: null,
+  lastError: null
+};
+var decisions = [];
+var auditLog = [];
+var MAX_LOG = 200;
+function audit(event, detail = {}) {
+  auditLog.unshift({ at: (/* @__PURE__ */ new Date()).toISOString(), event, ...detail });
+  if (auditLog.length > MAX_LOG) auditLog.length = MAX_LOG;
+}
+function rollDayIfNeeded() {
+  const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  if (state.ordersDate !== today) {
+    state.ordersDate = today;
+    state.ordersToday = 0;
+    if (state.halted && !state.requiresManualRestart) {
+      state.halted = false;
+      state.haltReason = null;
+      audit("halt_cleared", { reason: "new trading day" });
+    }
+  }
+}
+function getState() {
+  rollDayIfNeeded();
+  return {
+    ...state,
+    brokerConfigured: alpacaConfigured(),
+    isPaper: isPaperEndpoint(),
+    llmConfigured: mistralConfigured(),
+    llmBudget: getBudget(),
+    availableStrategies: describeStrategies(),
+    availablePresets: describePresets(),
+    // Trained models the bot can be pointed at, newest first.
+    availableModels: listTrained().map((m) => ({
+      id: m.id,
+      symbol: m.symbol,
+      modelType: m.modelType,
+      testAuc: m.testMetrics?.auc ?? null,
+      eligible: m.eligible,
+      published: m.published,
+      createdAt: m.createdAt
+    })),
+    activeModel: state.activeModelId ? (() => {
+      const m = getModel(state.activeModelId);
+      return m ? { id: m.id, symbol: m.symbol, modelType: m.modelType, eligible: m.eligible, published: m.published } : null;
+    })() : null
+  };
+}
+function setActiveModel(modelId) {
+  if (!modelId) {
+    state.activeModelId = null;
+    audit("model_cleared", {});
+    return { ok: true, activeModelId: null };
+  }
+  const m = getModel(modelId);
+  if (!m) return { ok: false, error: "Model not found (it may have been cleared on restart)" };
+  state.activeModelId = modelId;
+  audit("model_selected", { modelId, type: m.modelType, symbol: m.symbol, eligible: m.eligible });
+  return { ok: true, activeModelId: modelId, eligible: m.eligible };
+}
+function setEnabled(enabled, who = "user") {
+  if (enabled && state.halted && state.requiresManualRestart) {
+    return { ok: false, error: `Cannot enable: ${state.haltReason}. Reset the halt first.` };
+  }
+  state.enabled = Boolean(enabled);
+  audit(enabled ? "bot_enabled" : "bot_disabled", { by: who });
+  return { ok: true, enabled: state.enabled };
+}
+function resetHalt(who = "user") {
+  state.halted = false;
+  state.haltReason = null;
+  state.requiresManualRestart = false;
+  audit("halt_reset", { by: who });
+  return { ok: true };
+}
+function updateConfig(patch = {}) {
+  if (Array.isArray(patch.watchlist)) {
+    state.watchlist = patch.watchlist.map((s) => String(s).toUpperCase()).slice(0, 20);
+  }
+  if (patch.preset && PRESETS[patch.preset]) {
+    const p = PRESETS[patch.preset];
+    state.preset = patch.preset;
+    state.strategies = [...p.strategies];
+    state.threshold = p.threshold;
+  }
+  if (Array.isArray(patch.strategies)) {
+    const next = patch.strategies.filter((k) => STRATEGIES[k]);
+    if (next.length) {
+      state.strategies = next;
+      state.preset = "custom";
+    }
+  }
+  if (patch.threshold != null) {
+    const t = Number(patch.threshold);
+    if (Number.isFinite(t) && t >= 0 && t <= 1) {
+      state.threshold = t;
+      state.preset = "custom";
+    }
+  }
+  if (typeof patch.useLlm === "boolean") state.useLlm = patch.useLlm;
+  if (patch.limits && typeof patch.limits === "object") {
+    const ceilings = {
+      maxPositionPercent: 20,
+      maxSectorPercent: 50,
+      maxGrossExposurePercent: 100,
+      maxDailyLossPercent: 10,
+      maxDrawdownPercent: 25,
+      maxOrdersPerDay: 100,
+      maxOrderPercentOfADV: 5,
+      minOrderValue: 1e4
+    };
+    for (const [k, v] of Object.entries(patch.limits)) {
+      if (!(k in state.limits)) continue;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) continue;
+      state.limits[k] = Math.min(n, ceilings[k] ?? n);
+    }
+  }
+  audit("config_updated", { patch: Object.keys(patch) });
+  return getState();
+}
+function getDecisions(limit = 50) {
+  return decisions.slice(0, limit);
+}
+function getAudit(limit = 50) {
+  return auditLog.slice(0, limit);
+}
+async function killSwitch(who = "user") {
+  state.enabled = false;
+  state.halted = true;
+  state.haltReason = "Kill switch activated";
+  state.requiresManualRestart = true;
+  audit("kill_switch", { by: who });
+  const cancelled = await cancelAllOrders();
+  const closed = await closeAllPositions();
+  audit("kill_switch_complete", { cancelled, closed });
+  return { ok: true, cancelled, closed };
+}
+async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = false }) {
+  rollDayIfNeeded();
+  const startedAt = (/* @__PURE__ */ new Date()).toISOString();
+  if (!state.enabled && !dryRun) {
+    return { ok: false, skipped: "Bot is off", startedAt };
+  }
+  if (!alpacaConfigured()) {
+    return { ok: false, skipped: "Broker not configured", startedAt };
+  }
+  let account, positions, clock;
+  try {
+    [account, positions, clock] = await Promise.all([
+      getAccount(),
+      getPositions(),
+      getClock()
+    ]);
+  } catch (e) {
+    state.lastError = e.message;
+    audit("cycle_error", { error: e.message });
+    return { ok: false, error: e.message, startedAt };
+  }
+  state.peakEquity = state.peakEquity == null ? account.equity : Math.max(state.peakEquity, account.equity);
+  const drawdownPercent = state.peakEquity > 0 ? (state.peakEquity - account.equity) / state.peakEquity * 100 : 0;
+  const posBySymbol = Object.fromEntries(positions.map((p) => [p.symbol, p]));
+  const riskState = {
+    enabled: state.enabled,
+    halted: state.halted,
+    equity: account.equity,
+    dailyPnlPercent: account.dailyPnlPercent,
+    drawdownPercent,
+    ordersToday: state.ordersToday,
+    marketOpen: clock.isOpen,
+    positions: posBySymbol
+  };
+  const halt = checkHaltConditions(riskState, state.limits);
+  if (halt.halt && !state.halted) {
+    state.halted = true;
+    state.haltReason = halt.detail;
+    state.requiresManualRestart = halt.requiresManualRestart;
+    audit("auto_halt", { reason: halt.reason, detail: halt.detail });
+  }
+  const results = [];
+  for (const symbol of state.watchlist) {
+    try {
+      const technical = await fetchTechnical(symbol);
+      if (!technical || technical.available === false) {
+        results.push({ symbol, action: "SKIP", reason: "No technical data" });
+        continue;
+      }
+      let decision;
+      const modelRec = state.activeModelId ? getModel(state.activeModelId) : null;
+      if (modelRec) {
+        const candles = fetchCandles ? await fetchCandles(symbol).catch(() => null) : null;
+        if (!candles || candles.length < 60) {
+          results.push({ symbol, action: "SKIP", reason: "No candle history for model" });
+          continue;
+        }
+        const sig = modelStrategy(modelRec.artifact, candles, candles.length - 1);
+        decision = {
+          action: sig.action,
+          confidence: sig.confidence,
+          agreement: `${modelRec.modelType} model`,
+          rationale: sig.rationale,
+          signals: [{ name: `${modelRec.modelType.toUpperCase()} \xB7 ${modelRec.symbol}`, action: sig.action, confidence: sig.confidence }],
+          model: { id: modelRec.id, type: modelRec.modelType, eligible: modelRec.eligible }
+        };
+      } else {
+        decision = ensemble(technical, state.strategies, state.threshold);
+      }
+      if (state.useLlm && mistralConfigured() && decision.action !== "HOLD") {
+        const news = fetchNews ? await fetchNews(symbol).catch(() => []) : [];
+        const review = await reviewDecision({
+          symbol,
+          decision,
+          technical,
+          news,
+          position: posBySymbol[symbol] || null
+        });
+        decision = applyReview(decision, review);
+      }
+      const price = technical.price;
+      const held = posBySymbol[symbol];
+      let order = null, gate = null, submitted = null;
+      if (decision.action === "BUY") {
+        const qty = sizePosition(decision, account.equity, price, state.limits.maxPositionPercent);
+        if (qty > 0) order = { symbol, side: "buy", qty, price, avgDailyVolume: technical.volume?.avg20 };
+      } else if (decision.action === "SELL" && held?.qty > 0) {
+        order = { symbol, side: "sell", qty: held.qty, price };
+      }
+      if (order) {
+        gate = evaluateOrder(order, riskState, state.limits);
+        if (gate.approved && !dryRun) {
+          submitted = await submitOrder({
+            symbol,
+            side: order.side,
+            qty: gate.adjustedQty,
+            clientOrderId: `qb-${symbol}-${Date.now()}`
+          });
+          state.ordersToday++;
+          riskState.ordersToday = state.ordersToday;
+          audit("order_submitted", { symbol, side: order.side, qty: gate.adjustedQty, id: submitted.id });
+        }
+      }
+      const record = {
+        at: (/* @__PURE__ */ new Date()).toISOString(),
+        symbol,
+        action: decision.action,
+        confidence: decision.confidence,
+        agreement: decision.agreement,
+        rationale: decision.rationale,
+        signals: decision.signals,
+        llm: decision.llm || null,
+        model: decision.model || null,
+        vetoed: decision.vetoed || false,
+        damped: decision.damped || false,
+        order,
+        gate,
+        submitted,
+        dryRun
+      };
+      results.push(record);
+      decisions.unshift(record);
+      if (decisions.length > MAX_LOG) decisions.length = MAX_LOG;
+    } catch (e) {
+      results.push({ symbol, action: "ERROR", error: e.message });
+      audit("symbol_error", { symbol, error: e.message });
+    }
+  }
+  state.lastRun = startedAt;
+  state.lastError = null;
+  return {
+    ok: true,
+    startedAt,
+    finishedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    dryRun,
+    account: { equity: account.equity, cash: account.cash, dailyPnlPercent: +account.dailyPnlPercent.toFixed(3), drawdownPercent: +drawdownPercent.toFixed(3) },
+    marketOpen: clock.isOpen,
+    halted: state.halted,
+    haltReason: state.haltReason,
+    results
+  };
+}
+
+// bot/backtest.js
+var DEFAULT_COSTS = {
+  commissionPerShare: 5e-3,
+  // typical retail per-share commission
+  commissionMinimum: 1,
+  slippageBps: 5,
+  // 5 basis points of adverse price movement
+  spreadBps: 2
+  // half-spread paid on entry and exit
+};
+function fillPrice(price, side, costs) {
+  const adverse = (costs.slippageBps + costs.spreadBps) / 1e4;
+  return side === "buy" ? price * (1 + adverse) : price * (1 - adverse);
+}
+function commission(shares, costs) {
+  return Math.max(shares * costs.commissionPerShare, costs.commissionMinimum);
+}
+function runBacktest(candles, options = {}) {
+  const {
+    symbol = "",
+    strategies = Object.keys(STRATEGIES),
+    threshold = 0.15,
+    initialCapital = 1e5,
+    maxPositionPercent = 20,
+    costs = DEFAULT_COSTS,
+    warmup = 200,
+    periodsPerYear = 252,
+    rfAnnual = 0.045
+  } = options;
+  if (!candles || candles.length < warmup + 20) {
+    return { available: false, message: `Need at least ${warmup + 20} bars, got ${candles?.length || 0}` };
+  }
+  let cash = initialCapital;
+  let shares = 0;
+  const equityCurve = [];
+  const trades = [];
+  const decisions2 = [];
+  let totalCommission = 0, totalSlippage = 0;
+  for (let t = warmup; t < candles.length; t++) {
+    const visible = candles.slice(0, t + 1);
+    const bar = candles[t];
+    const ta = computeTechnical(visible, symbol);
+    const decision = ta.available ? ensemble(ta, strategies, threshold) : { action: "HOLD", confidence: 0, signals: [] };
+    const nextBar = candles[t + 1];
+    if (nextBar) {
+      const equityNow = cash + shares * bar.close;
+      if (decision.action === "BUY" && shares === 0) {
+        const qty = sizePosition(decision, equityNow, nextBar.open, maxPositionPercent);
+        if (qty > 0) {
+          const px = fillPrice(nextBar.open, "buy", costs);
+          const comm = commission(qty, costs);
+          const cost = qty * px + comm;
+          if (cost <= cash) {
+            const slip = qty * (px - nextBar.open);
+            cash -= cost;
+            shares += qty;
+            totalCommission += comm;
+            totalSlippage += slip;
+            trades.push({
+              time: nextBar.time,
+              side: "buy",
+              qty,
+              price: +px.toFixed(4),
+              reference: nextBar.open,
+              commission: +comm.toFixed(2),
+              slippage: +slip.toFixed(2),
+              confidence: decision.confidence,
+              rationale: decision.rationale
+            });
+          }
+        }
+      } else if (decision.action === "SELL" && shares > 0) {
+        const px = fillPrice(nextBar.open, "sell", costs);
+        const comm = commission(shares, costs);
+        const slip = shares * (nextBar.open - px);
+        cash += shares * px - comm;
+        totalCommission += comm;
+        totalSlippage += slip;
+        trades.push({
+          time: nextBar.time,
+          side: "sell",
+          qty: shares,
+          price: +px.toFixed(4),
+          reference: nextBar.open,
+          commission: +comm.toFixed(2),
+          slippage: +slip.toFixed(2),
+          confidence: decision.confidence,
+          rationale: decision.rationale
+        });
+        shares = 0;
+      }
+    }
+    equityCurve.push(cash + shares * bar.close);
+    decisions2.push({ time: bar.time, action: decision.action, confidence: decision.confidence });
+  }
+  const last = candles[candles.length - 1];
+  const finalEquity = cash + shares * last.close;
+  const periodReturns = [];
+  for (let i = 1; i < equityCurve.length; i++) {
+    periodReturns.push((equityCurve[i] - equityCurve[i - 1]) / equityCurve[i - 1]);
+  }
+  const stats = summarise(equityCurve, periodReturns, periodsPerYear, rfAnnual);
+  const bhStart = candles[warmup];
+  const bhEntry = fillPrice(bhStart.close, "buy", costs);
+  const bhShares = Math.floor(initialCapital / bhEntry);
+  const bhCash = initialCapital - bhShares * bhEntry - commission(bhShares, costs);
+  const bhCurve = candles.slice(warmup).map((c) => bhCash + bhShares * c.close);
+  const bhReturns = [];
+  for (let i = 1; i < bhCurve.length; i++) {
+    bhReturns.push((bhCurve[i] - bhCurve[i - 1]) / bhCurve[i - 1]);
+  }
+  const bhStats = summarise(bhCurve, bhReturns, periodsPerYear, rfAnnual);
+  return {
+    available: true,
+    symbol,
+    config: { strategies, threshold, initialCapital, maxPositionPercent, costs, warmup },
+    bars: equityCurve.length,
+    from: candles[warmup]?.time,
+    to: last.time,
+    finalEquity: +finalEquity.toFixed(2),
+    stats,
+    benchmark: bhStats,
+    // The number that decides whether the strategy was worth running at all.
+    excessReturn: stats && bhStats ? +(stats.totalReturn - bhStats.totalReturn).toFixed(2) : null,
+    beatBenchmark: stats && bhStats ? stats.totalReturn > bhStats.totalReturn : null,
+    trades: trades.length,
+    tradeLog: trades.slice(-40),
+    costs: {
+      totalCommission: +totalCommission.toFixed(2),
+      totalSlippage: +totalSlippage.toFixed(2),
+      totalCost: +(totalCommission + totalSlippage).toFixed(2),
+      // Costs as a share of starting capital — the drag a frictionless
+      // backtest would have hidden entirely.
+      costDragPercent: +((totalCommission + totalSlippage) / initialCapital * 100).toFixed(2)
+    },
+    equityCurve: equityCurve.map((v, i) => ({
+      time: candles[warmup + i].time,
+      equity: +v.toFixed(2),
+      benchmark: bhCurve[i] != null ? +bhCurve[i].toFixed(2) : null
+    })),
+    periodReturns
+  };
+}
+function walkForward(candles, options = {}) {
+  const { folds = 4, warmup = 200, ...rest } = options;
+  const usable = candles.length - warmup;
+  if (usable < folds * 60) {
+    return { available: false, message: `Need ~${folds * 60 + warmup} bars for ${folds} folds` };
+  }
+  const foldSize = Math.floor(usable / folds);
+  const results = [];
+  for (let f = 0; f < folds; f++) {
+    const end = warmup + foldSize * (f + 1);
+    const start = warmup + foldSize * f;
+    const slice = candles.slice(0, end);
+    const r = runBacktest(slice, { ...rest, warmup: start });
+    if (r.available) {
+      results.push({
+        fold: f + 1,
+        from: candles[start]?.time,
+        to: candles[end - 1]?.time,
+        totalReturn: r.stats?.totalReturn ?? null,
+        sharpe: r.stats?.sharpe ?? null,
+        maxDrawdown: r.stats?.maxDrawdown ?? null,
+        benchmarkReturn: r.benchmark?.totalReturn ?? null,
+        beatBenchmark: r.beatBenchmark,
+        trades: r.trades
+      });
+    }
+  }
+  if (!results.length) return { available: false, message: "No fold produced a result" };
+  const rets = results.map((r) => r.totalReturn).filter((v) => v != null);
+  const beats = results.filter((r) => r.beatBenchmark).length;
+  return {
+    available: true,
+    folds: results,
+    consistency: {
+      foldsBeatingBenchmark: beats,
+      totalFolds: results.length,
+      // Persistence across folds is the point. A strategy that wins once and
+      // loses three times has not shown anything.
+      beatRate: +(beats / results.length * 100).toFixed(1),
+      meanReturn: rets.length ? +(rets.reduce((a, b) => a + b, 0) / rets.length).toFixed(2) : null,
+      returnStdev: rets.length > 1 ? +stdev(rets).toFixed(2) : null,
+      worstFold: rets.length ? +Math.min(...rets).toFixed(2) : null,
+      bestFold: rets.length ? +Math.max(...rets).toFixed(2) : null
+    }
+  };
+}
+function sweepStrategies(candles, options = {}) {
+  const { thresholds = [0.1, 0.15, 0.25], ...rest } = options;
+  const keys = Object.keys(STRATEGIES);
+  const combos = [
+    ...keys.map((k) => [k]),
+    ["trend", "consensus"],
+    ["rsi", "bollinger"],
+    ["trend", "macd"],
+    keys
+  ];
+  const variants = [];
+  for (const strategies of combos) {
+    for (const threshold of thresholds) {
+      const r = runBacktest(candles, { ...rest, strategies, threshold });
+      if (r.available && r.stats) {
+        variants.push({
+          strategies,
+          threshold,
+          totalReturn: r.stats.totalReturn,
+          sharpe: r.stats.sharpe,
+          maxDrawdown: r.stats.maxDrawdown,
+          trades: r.trades,
+          beatBenchmark: r.beatBenchmark,
+          periodReturns: r.periodReturns
+        });
+      }
+    }
+  }
+  if (!variants.length) return { available: false, message: "No variant produced a result" };
+  const ranked = [...variants].sort((a, b) => b.sharpe - a.sharpe);
+  const best = ranked[0];
+  const sharpes = variants.map((v) => v.sharpe);
+  const sharpeVar = sharpes.length > 1 ? Math.pow(stdev(sharpes), 2) : 0;
+  const perPeriod = best.periodReturns;
+  const dsr = deflatedSharpe(
+    perPeriod,
+    variants.length,
+    sharpeVar / (options.periodsPerYear || 252)
+  );
+  const pbo = probabilityOfBacktestOverfitting(
+    variants.map((v) => v.periodReturns),
+    6
+  );
+  return {
+    available: true,
+    trials: variants.length,
+    best: {
+      strategies: best.strategies,
+      threshold: best.threshold,
+      totalReturn: best.totalReturn,
+      sharpe: best.sharpe,
+      maxDrawdown: best.maxDrawdown,
+      trades: best.trades,
+      beatBenchmark: best.beatBenchmark
+    },
+    ranking: ranked.slice(0, 10).map(({ periodReturns, ...v }) => v),
+    overfitting: {
+      deflatedSharpe: dsr?.deflatedSharpe ?? null,
+      expectedMaxSharpeByLuck: dsr?.expectedMaxSharpe ?? null,
+      pbo: pbo?.pbo ?? null,
+      pboSplits: pbo?.splits ?? null,
+      // Plain-language verdict, because the numbers are easy to misread.
+      verdict: verdictFor(dsr?.deflatedSharpe, pbo?.pbo)
+    }
+  };
+}
+function verdictFor(dsr, pbo) {
+  if (dsr == null && pbo == null) return "Not enough data to judge.";
+  if (dsr != null && dsr < 0.9) {
+    return "Not distinguishable from luck \u2014 the best variant is about what you would expect from trying this many.";
+  }
+  if (pbo != null && pbo > 0.5) {
+    return "High overfitting risk \u2014 the in-sample winner usually underperforms out of sample.";
+  }
+  if (dsr != null && dsr >= 0.95 && (pbo == null || pbo < 0.3)) {
+    return "Survives deflation and shows low overfitting risk. Still needs forward testing.";
+  }
+  return "Mixed evidence \u2014 treat with caution and forward test before trusting it.";
 }
 
 // server.js
@@ -5175,6 +5224,7 @@ var botFetchNews = async (symbol) => {
   const resp = await fetch2(`http://127.0.0.1:${port}/api/v1/news?symbol=${symbol}&limit=5`);
   return resp.ok ? resp.json() : [];
 };
+var botFetchCandles = async (symbol) => yahooCandles(symbol, "1d", "1y").catch(() => null);
 app.get("/api/v1/bot/status", async (req, res) => {
   try {
     const state2 = getState();
@@ -5200,6 +5250,10 @@ app.post("/api/v1/bot/toggle", (req, res) => {
 app.post("/api/v1/bot/config", (req, res) => {
   res.json(updateConfig(req.body || {}));
 });
+app.post("/api/v1/bot/model", (req, res) => {
+  const result = setActiveModel(req.body?.modelId || null);
+  res.status(result.ok ? 200 : 404).json({ ...result, state: getState() });
+});
 app.post("/api/v1/bot/reset-halt", (req, res) => {
   res.json({ ...resetHalt(), state: getState() });
 });
@@ -5208,6 +5262,7 @@ app.post("/api/v1/bot/run", async (req, res) => {
     const result = await runCycle({
       fetchTechnical: botFetchTechnical,
       fetchNews: botFetchNews,
+      fetchCandles: botFetchCandles,
       dryRun: Boolean(req.body?.dryRun)
     });
     res.json(result);

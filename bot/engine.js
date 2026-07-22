@@ -8,6 +8,8 @@
 import { evaluateOrder, checkHaltConditions, DEFAULT_LIMITS } from './risk-gate.js';
 import { ensemble, sizePosition, STRATEGIES, PRESETS, describeStrategies, describePresets } from './strategies.js';
 import { reviewDecision, applyReview, mistralConfigured, getBudget } from './mistral.js';
+import { modelStrategy } from './model.js';
+import { getModel, listTrained } from './model-registry.js';
 import * as broker from './alpaca.js';
 
 const state = {
@@ -20,6 +22,9 @@ const state = {
   strategies: PRESETS.balanced.strategies,
   threshold: PRESETS.balanced.threshold,
   preset: 'balanced',
+  // null = decide with the rule-strategy ensemble; otherwise the id of a
+  // trained ML model from the Model Lab drives every decision instead.
+  activeModelId: null,
   useLlm: true,
   limits: { ...DEFAULT_LIMITS },
   ordersToday: 0,
@@ -64,7 +69,36 @@ export function getState() {
     llmBudget: getBudget(),
     availableStrategies: describeStrategies(),
     availablePresets: describePresets(),
+    // Trained models the bot can be pointed at, newest first.
+    availableModels: listTrained().map(m => ({
+      id: m.id, symbol: m.symbol, modelType: m.modelType,
+      testAuc: m.testMetrics?.auc ?? null,
+      eligible: m.eligible, published: m.published,
+      createdAt: m.createdAt,
+    })),
+    activeModel: state.activeModelId ? (() => {
+      const m = getModel(state.activeModelId);
+      return m ? { id: m.id, symbol: m.symbol, modelType: m.modelType, eligible: m.eligible, published: m.published } : null;
+    })() : null,
   };
+}
+
+/**
+ * Point the bot at a trained model (or back at the rule strategies with null).
+ * Paper-only, so an ungated model is allowed — but the caller is told whether
+ * it passed validation so the UI can warn.
+ */
+export function setActiveModel(modelId) {
+  if (!modelId) {
+    state.activeModelId = null;
+    audit('model_cleared', {});
+    return { ok: true, activeModelId: null };
+  }
+  const m = getModel(modelId);
+  if (!m) return { ok: false, error: 'Model not found (it may have been cleared on restart)' };
+  state.activeModelId = modelId;
+  audit('model_selected', { modelId, type: m.modelType, symbol: m.symbol, eligible: m.eligible });
+  return { ok: true, activeModelId: modelId, eligible: m.eligible };
 }
 
 export function setEnabled(enabled, who = 'user') {
@@ -150,8 +184,9 @@ export async function killSwitch(who = 'user') {
  *
  * @param fetchTechnical - async (symbol) => technical payload
  * @param fetchNews      - async (symbol) => headlines
+ * @param fetchCandles   - async (symbol) => OHLCV[] (only used when a model is active)
  */
-export async function runCycle({ fetchTechnical, fetchNews, dryRun = false }) {
+export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = false }) {
   rollDayIfNeeded();
   const startedAt = new Date().toISOString();
 
@@ -208,7 +243,26 @@ export async function runCycle({ fetchTechnical, fetchNews, dryRun = false }) {
         continue;
       }
 
-      let decision = ensemble(technical, state.strategies, state.threshold);
+      // Decision source: a selected ML model, else the rule ensemble.
+      let decision;
+      const modelRec = state.activeModelId ? getModel(state.activeModelId) : null;
+      if (modelRec) {
+        const candles = fetchCandles ? await fetchCandles(symbol).catch(() => null) : null;
+        if (!candles || candles.length < 60) {
+          results.push({ symbol, action: 'SKIP', reason: 'No candle history for model' });
+          continue;
+        }
+        const sig = modelStrategy(modelRec.artifact, candles, candles.length - 1);
+        decision = {
+          action: sig.action, confidence: sig.confidence,
+          agreement: `${modelRec.modelType} model`,
+          rationale: sig.rationale,
+          signals: [{ name: `${modelRec.modelType.toUpperCase()} · ${modelRec.symbol}`, action: sig.action, confidence: sig.confidence }],
+          model: { id: modelRec.id, type: modelRec.modelType, eligible: modelRec.eligible },
+        };
+      } else {
+        decision = ensemble(technical, state.strategies, state.threshold);
+      }
 
       // Advisory review only where there is something to review.
       if (state.useLlm && mistralConfigured() && decision.action !== 'HOLD') {
@@ -248,6 +302,7 @@ export async function runCycle({ fetchTechnical, fetchNews, dryRun = false }) {
         action: decision.action, confidence: decision.confidence,
         agreement: decision.agreement, rationale: decision.rationale,
         signals: decision.signals, llm: decision.llm || null,
+        model: decision.model || null,
         vetoed: decision.vetoed || false, damped: decision.damped || false,
         order, gate, submitted, dryRun,
       };
