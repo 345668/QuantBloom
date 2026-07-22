@@ -38,6 +38,7 @@ import StressTestPanel from './components/StressTestPanel.jsx';
 import StrategyBuilder from './components/StrategyBuilder.jsx';
 import BotPanel from './components/BotPanel.jsx';
 import BacktestPanel from './components/BacktestPanel.jsx';
+import ModelLabPanel from './components/ModelLabPanel.jsx';
 
 function Dashboard() {
   const { state, dispatch } = useDashboard();
@@ -95,11 +96,18 @@ function Dashboard() {
         <MarketsPanel />
       </div>
 
-      {/* Row 2a: Compare */}
+      {/* Row 2a: Model Lab + Portfolio + Attribution */}
       <div className="dashboard-row row-3col">
-        <ComparePanel />
+        <ModelLabPanel />
         <PortfolioPanel />
         <AttributionPanel />
+      </div>
+
+      {/* Row 2a2: Compare */}
+      <div className="dashboard-row row-3col">
+        <ComparePanel />
+        <RiskPanel />
+        <CorrelationPanel />
       </div>
 
       {/* Row 2b: Indices */}
@@ -131,18 +139,16 @@ function Dashboard() {
         <ScreenerPanel />
       </div>
 
-      {/* Row 5: Portfolio + Risk + Correlation + Alerts */}
-      <div className="dashboard-row row-3col">
-        <RiskPanel />
-        <CorrelationPanel />
-        <AlertsPanel />
-      </div>
-
       {/* Row 6: Breadth + Yield Curve + Comps */}
       <div className="dashboard-row row-3col">
         <BreadthPanel />
         <YieldCurvePanel />
         <CompsPanel />
+      </div>
+
+      {/* Row 6b: Alerts */}
+      <div className="dashboard-row row-2col">
+        <AlertsPanel />
       </div>
 
       {/* Row 7: Quantitative risk */}

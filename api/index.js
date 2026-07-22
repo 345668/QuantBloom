@@ -2307,6 +2307,386 @@ function verdictFor(dsr, pbo) {
   return "Mixed evidence \u2014 treat with caution and forward test before trusting it.";
 }
 
+// bot/features.js
+var FEATURE_NAMES = [
+  "ret1",
+  "ret5",
+  "ret10",
+  // momentum over 1/5/10 bars
+  "rsi",
+  // RSI(14) scaled to [0,1]
+  "macdHist",
+  // MACD histogram / price
+  "priceVsSma20",
+  // close/SMA20 - 1
+  "priceVsSma50",
+  // close/SMA50 - 1
+  "bbPosition",
+  // position within Bollinger band [0,1]
+  "adx",
+  // trend strength / 100
+  "atrPct",
+  // ATR(14) / price
+  "volumeRatio",
+  // volume / 20-bar avg
+  "volatility"
+  // stdev of last 20 returns
+];
+var pctReturn = (a, b) => a && b ? (a - b) / b : 0;
+function stdev20(returns) {
+  if (returns.length < 2) return 0;
+  const m = returns.reduce((s, v) => s + v, 0) / returns.length;
+  return Math.sqrt(returns.reduce((s, v) => s + (v - m) ** 2, 0) / returns.length);
+}
+function featuresAt(candles, t) {
+  if (t < 50) return null;
+  const window = candles.slice(0, t + 1);
+  const closes = window.map((c) => c.close);
+  const highs = window.map((c) => c.high);
+  const lows = window.map((c) => c.low);
+  const vols = window.map((c) => c.volume || 0);
+  const price = closes[closes.length - 1];
+  if (!price) return null;
+  const bb = bollinger(closes, 20, 2);
+  const md = macd(closes);
+  const sma20 = sma(closes, 20);
+  const sma50 = sma(closes, 50);
+  const adxv = adx(highs, lows, closes, 14);
+  const atrv = atr(highs, lows, closes, 14);
+  const rsiv = rsi(closes, 14);
+  const avgVol = sma(vols, 20);
+  const recentReturns = [];
+  for (let i = closes.length - 20; i < closes.length; i++) {
+    if (i > 0 && closes[i - 1]) recentReturns.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+  }
+  const vec = [
+    pctReturn(price, closes[closes.length - 2]),
+    pctReturn(price, closes[closes.length - 6]),
+    pctReturn(price, closes[closes.length - 11]),
+    rsiv != null ? rsiv / 100 : 0.5,
+    md ? md.histogram / price : 0,
+    sma20 ? price / sma20 - 1 : 0,
+    sma50 ? price / sma50 - 1 : 0,
+    bb && bb.upper !== bb.lower ? (price - bb.lower) / (bb.upper - bb.lower) : 0.5,
+    adxv ? adxv.adx / 100 : 0,
+    atrv ? atrv / price : 0,
+    avgVol ? (vols[vols.length - 1] || 0) / avgVol : 1,
+    stdev20(recentReturns)
+  ];
+  return vec.map((v) => Number.isFinite(v) ? v : 0);
+}
+function tripleBarrierLabel(candles, t, { up = 0.03, down = 0.02, horizon = 10 } = {}) {
+  const entry = candles[t]?.close;
+  if (!entry) return null;
+  if (t + horizon >= candles.length) return null;
+  const upBarrier = entry * (1 + up);
+  const downBarrier = entry * (1 - down);
+  for (let i = t + 1; i <= t + horizon; i++) {
+    const bar = candles[i];
+    if (!bar) break;
+    if (bar.low <= downBarrier) return 0;
+    if (bar.high >= upBarrier) return 1;
+  }
+  const exit = candles[t + horizon].close;
+  return exit > entry ? 1 : 0;
+}
+function buildDataset(candles, labelConfig = {}) {
+  const X = [], y = [], times = [];
+  const warmup = 50;
+  const horizon = labelConfig.horizon || 10;
+  for (let t = warmup; t < candles.length - horizon; t++) {
+    const feat = featuresAt(candles, t);
+    const label = tripleBarrierLabel(candles, t, labelConfig);
+    if (feat && label != null) {
+      X.push(feat);
+      y.push(label);
+      times.push(candles[t].time);
+    }
+  }
+  return { X, y, times, featureNames: FEATURE_NAMES };
+}
+function temporalSplit(dataset, testFraction = 0.3) {
+  const n = dataset.X.length;
+  const cut = Math.floor(n * (1 - testFraction));
+  return {
+    train: { X: dataset.X.slice(0, cut), y: dataset.y.slice(0, cut) },
+    test: { X: dataset.X.slice(cut), y: dataset.y.slice(cut), times: dataset.times.slice(cut) },
+    featureNames: dataset.featureNames,
+    splitIndex: cut
+  };
+}
+
+// bot/model.js
+var sigmoid = (z) => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))));
+function fitScaler(X) {
+  const k = X[0].length, n = X.length;
+  const means = new Array(k).fill(0), stds = new Array(k).fill(0);
+  for (const row of X) for (let j = 0; j < k; j++) means[j] += row[j];
+  for (let j = 0; j < k; j++) means[j] /= n;
+  for (const row of X) for (let j = 0; j < k; j++) stds[j] += (row[j] - means[j]) ** 2;
+  for (let j = 0; j < k; j++) stds[j] = Math.sqrt(stds[j] / n) || 1;
+  return { means, stds };
+}
+var scaleRow = (row, s) => row.map((v, j) => (v - s.means[j]) / s.stds[j]);
+function trainLogistic(X, y, opts = {}) {
+  const { epochs = 400, lr = 0.1, l2 = 0.01, featureNames = FEATURE_NAMES } = opts;
+  if (!X.length || X.length !== y.length) return null;
+  const k = X[0].length, n = X.length;
+  const scaler = fitScaler(X);
+  const Xs = X.map((r) => scaleRow(r, scaler));
+  let w = new Array(k).fill(0), b = 0;
+  const history = [];
+  for (let e = 0; e < epochs; e++) {
+    const gw = new Array(k).fill(0);
+    let gb = 0, loss = 0;
+    for (let i = 0; i < n; i++) {
+      const p = sigmoid(Xs[i].reduce((s, v, j) => s + v * w[j], b));
+      const err = p - y[i];
+      for (let j = 0; j < k; j++) gw[j] += err * Xs[i][j];
+      gb += err;
+      const eps = 1e-9;
+      loss += -(y[i] * Math.log(p + eps) + (1 - y[i]) * Math.log(1 - p + eps));
+    }
+    for (let j = 0; j < k; j++) w[j] -= lr * (gw[j] / n + l2 * w[j]);
+    b -= lr * (gb / n);
+    if (e % 50 === 0 || e === epochs - 1) history.push(+(loss / n).toFixed(5));
+  }
+  return {
+    type: "logistic",
+    weights: w.map((v) => +v.toFixed(6)),
+    bias: +b.toFixed(6),
+    scaler: {
+      means: scaler.means.map((v) => +v.toFixed(6)),
+      stds: scaler.stds.map((v) => +v.toFixed(6))
+    },
+    featureNames,
+    lossHistory: history,
+    trainedOn: n
+  };
+}
+function predictProba(model2, featureRow) {
+  const s = model2.scaler;
+  const z = featureRow.reduce((acc, v, j) => acc + (v - s.means[j]) / s.stds[j] * model2.weights[j], model2.bias);
+  return sigmoid(z);
+}
+function evaluate(model2, X, y) {
+  if (!X.length) return null;
+  let correct = 0, tp = 0, fp = 0, fn = 0, tn = 0;
+  const probs = [];
+  for (let i = 0; i < X.length; i++) {
+    const p = predictProba(model2, X[i]);
+    probs.push(p);
+    const pred = p >= 0.5 ? 1 : 0;
+    if (pred === y[i]) correct++;
+    if (pred === 1 && y[i] === 1) tp++;
+    else if (pred === 1 && y[i] === 0) fp++;
+    else if (pred === 0 && y[i] === 1) fn++;
+    else tn++;
+  }
+  const precision = tp + fp ? tp / (tp + fp) : 0;
+  const recall = tp + fn ? tp / (tp + fn) : 0;
+  const auc = rankAuc(probs, y);
+  return {
+    accuracy: +(correct / X.length).toFixed(4),
+    precision: +precision.toFixed(4),
+    recall: +recall.toFixed(4),
+    f1: precision + recall ? +(2 * precision * recall / (precision + recall)).toFixed(4) : 0,
+    auc: auc != null ? +auc.toFixed(4) : null,
+    n: X.length,
+    positiveRate: +(y.reduce((a, b) => a + b, 0) / y.length).toFixed(4)
+  };
+}
+function rankAuc(scores, labels) {
+  const pos = [], neg = [];
+  scores.forEach((s, i) => (labels[i] === 1 ? pos : neg).push(s));
+  if (!pos.length || !neg.length) return null;
+  const idx = scores.map((s, i) => ({ s, y: labels[i] })).sort((a, b) => a.s - b.s);
+  let rankSum = 0;
+  idx.forEach((o, i) => {
+    if (o.y === 1) rankSum += i + 1;
+  });
+  return (rankSum - pos.length * (pos.length + 1) / 2) / (pos.length * neg.length);
+}
+function modelStrategy(model2, candles, t, { buyThreshold = 0.55, sellThreshold = 0.45 } = {}) {
+  const feat = featuresAt(candles, t);
+  if (!feat) return { action: "HOLD", confidence: 0, rationale: "Insufficient history" };
+  const p = predictProba(model2, feat);
+  if (p >= buyThreshold) return { action: "BUY", confidence: +((p - 0.5) * 2).toFixed(3), rationale: `Model P(up)=${p.toFixed(2)}` };
+  if (p <= sellThreshold) return { action: "SELL", confidence: +((0.5 - p) * 2).toFixed(3), rationale: `Model P(up)=${p.toFixed(2)}` };
+  return { action: "HOLD", confidence: 0, rationale: `Model P(up)=${p.toFixed(2)} \u2014 near coin flip` };
+}
+
+// bot/model-registry.js
+var PUBLISH_GATE = {
+  minTestAuc: 0.55,
+  // better than a coin flip at telling up from down
+  minOutOfSampleSharpe: 0.5,
+  // risk-adjusted, on unseen data
+  minDeflatedSharpe: 0.9,
+  // survives adjustment for how many were tried
+  mustBeatBenchmark: true,
+  // beat buy-and-hold over the test window
+  minTestTrades: 5,
+  // enough trades for the stats to mean anything
+  minTestRows: 60
+  // enough held-out data to judge at all
+};
+var trained = [];
+var published = [];
+var MAX_TRAINED = 50;
+function id() {
+  return `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
+function backtestModel(model2, candles, testStartTime, opts = {}) {
+  const { initialCapital = 1e5, maxPositionPercent = 20 } = opts;
+  const startIdx = candles.findIndex((c) => c.time >= testStartTime);
+  if (startIdx < 60) return null;
+  let cash = initialCapital, shares = 0;
+  const equity = [];
+  let trades = 0;
+  const slip = 7e-4;
+  for (let t = startIdx; t < candles.length - 1; t++) {
+    const sig = modelStrategy(model2, candles, t);
+    const next = candles[t + 1];
+    const eq = cash + shares * candles[t].close;
+    if (sig.action === "BUY" && shares === 0) {
+      const spend = eq * (maxPositionPercent / 100) * Math.max(sig.confidence, 0.25);
+      const px = next.open * (1 + slip);
+      const qty = Math.floor(spend / px);
+      if (qty > 0 && qty * px <= cash) {
+        cash -= qty * px;
+        shares += qty;
+        trades++;
+      }
+    } else if (sig.action === "SELL" && shares > 0) {
+      cash += shares * next.open * (1 - slip);
+      shares = 0;
+      trades++;
+    }
+    equity.push(cash + shares * candles[t].close);
+  }
+  equity.push(cash + shares * candles[candles.length - 1].close);
+  const rets = [];
+  for (let i = 1; i < equity.length; i++) rets.push((equity[i] - equity[i - 1]) / equity[i - 1]);
+  const stats = summarise(equity, rets, 252, 0.045);
+  const bh = candles.slice(startIdx).map((c) => c.close);
+  const bhReturn = bh.length > 1 ? (bh[bh.length - 1] - bh[0]) / bh[0] * 100 : 0;
+  const dsr = rets.length >= 4 ? deflatedSharpe(rets, 20) : null;
+  return {
+    stats,
+    trades,
+    benchmarkReturn: +bhReturn.toFixed(2),
+    beatBenchmark: stats ? stats.totalReturn > bhReturn : false,
+    deflatedSharpe: dsr?.deflatedSharpe ?? null
+  };
+}
+function evaluateGate({ testMetrics, backtest }) {
+  const reasons = [];
+  const g = PUBLISH_GATE;
+  if (!testMetrics || testMetrics.n < g.minTestRows) reasons.push(`Need ${g.minTestRows}+ test rows`);
+  if (testMetrics && testMetrics.auc != null && testMetrics.auc < g.minTestAuc) {
+    reasons.push(`Test AUC ${testMetrics.auc} < ${g.minTestAuc} (no predictive edge)`);
+  }
+  if (!backtest || !backtest.stats) reasons.push("No out-of-sample backtest");
+  else {
+    if (backtest.trades < g.minTestTrades) reasons.push(`Only ${backtest.trades} test trades (need ${g.minTestTrades})`);
+    if (backtest.stats.sharpe < g.minOutOfSampleSharpe) reasons.push(`OOS Sharpe ${backtest.stats.sharpe} < ${g.minOutOfSampleSharpe}`);
+    if (g.mustBeatBenchmark && !backtest.beatBenchmark) {
+      reasons.push(`Lost to buy-and-hold (${backtest.stats.totalReturn}% vs ${backtest.benchmarkReturn}%)`);
+    }
+    if (backtest.deflatedSharpe != null && backtest.deflatedSharpe < g.minDeflatedSharpe) {
+      reasons.push(`Deflated Sharpe ${backtest.deflatedSharpe} < ${g.minDeflatedSharpe} (not distinguishable from luck)`);
+    }
+  }
+  return { eligible: reasons.length === 0, reasons, gate: g };
+}
+function trainAndRegister(candles, config = {}) {
+  const {
+    symbol = "",
+    range = "5y",
+    modelType = "logistic",
+    label = { up: 0.03, down: 0.02, horizon: 10 },
+    testFraction = 0.3,
+    epochs = 400,
+    lr = 0.1,
+    l2 = 0.01
+  } = config;
+  if (modelType !== "logistic") {
+    return { ok: false, error: `Model type "${modelType}" trains via the local Python pipeline (see MODEL_TRAINING.md), not in-app.` };
+  }
+  if (!candles || candles.length < 300) {
+    return { ok: false, error: `Need 300+ bars, got ${candles?.length || 0}` };
+  }
+  const dataset = buildDataset(candles, label);
+  if (dataset.X.length < 100) {
+    return { ok: false, error: `Only ${dataset.X.length} labeled rows; need 100+` };
+  }
+  const split = temporalSplit(dataset, testFraction);
+  const model2 = trainLogistic(split.train.X, split.train.y, { epochs, lr, l2, featureNames: dataset.featureNames });
+  if (!model2) return { ok: false, error: "Training failed" };
+  const trainMetrics = evaluate(model2, split.train.X, split.train.y);
+  const testMetrics = evaluate(model2, split.test.X, split.test.y);
+  const testStartTime = split.test.times[0];
+  const backtest = backtestModel(model2, candles, testStartTime, config);
+  const gate = evaluateGate({ testMetrics, backtest });
+  const record = {
+    id: id(),
+    symbol,
+    range,
+    modelType,
+    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+    config: { label, testFraction, epochs, lr, l2 },
+    artifact: model2,
+    trainMetrics,
+    testMetrics,
+    backtest,
+    eligible: gate.eligible,
+    gateReasons: gate.reasons,
+    published: false
+  };
+  trained.unshift(record);
+  if (trained.length > MAX_TRAINED) trained.length = MAX_TRAINED;
+  return { ok: true, model: record, gate };
+}
+function listTrained() {
+  return trained.map(({ artifact, ...rest }) => ({ ...rest, featureCount: artifact.weights.length }));
+}
+function getModel(modelId) {
+  return trained.find((m) => m.id === modelId) || null;
+}
+function publishModel(modelId) {
+  const m = getModel(modelId);
+  if (!m) return { ok: false, error: "Model not found" };
+  const gate = evaluateGate({ testMetrics: m.testMetrics, backtest: m.backtest });
+  if (!gate.eligible) {
+    return { ok: false, error: "Model does not meet the publish gate", reasons: gate.reasons };
+  }
+  if (published.some((p) => p.id === m.id)) return { ok: false, error: "Already published" };
+  m.published = true;
+  published.unshift({
+    id: m.id,
+    symbol: m.symbol,
+    modelType: m.modelType,
+    publishedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    testMetrics: m.testMetrics,
+    backtest: m.backtest,
+    config: m.config,
+    artifact: m.artifact
+  });
+  return { ok: true, published: published.length };
+}
+function listPublished() {
+  return published.map(({ artifact, ...rest }) => rest);
+}
+function unpublish(modelId) {
+  const i = published.findIndex((p) => p.id === modelId);
+  if (i < 0) return { ok: false, error: "Not published" };
+  published.splice(i, 1);
+  const m = getModel(modelId);
+  if (m) m.published = false;
+  return { ok: true };
+}
+
 // server.js
 dotenv.config();
 var app = express();
@@ -2878,14 +3258,14 @@ app.get("/api/v1/fred/rates", async (req, res) => {
     if (cached) return res.json(cached);
     const rateSeriesIds = ["DFF", "DGS2", "DGS10", "DGS30", "T10Y2Y", "T10YFF"];
     const results = {};
-    await Promise.all(rateSeriesIds.map(async (id) => {
+    await Promise.all(rateSeriesIds.map(async (id2) => {
       try {
-        const obs = await fredFetch(id, { limit: 5 });
+        const obs = await fredFetch(id2, { limit: 5 });
         if (obs?.length) {
           const latest = obs.find((o) => o.value !== ".");
           const prev = obs.find((o, i) => i > 0 && o.value !== ".");
-          results[id] = {
-            name: FRED_SERIES[id].name,
+          results[id2] = {
+            name: FRED_SERIES[id2].name,
             value: latest ? parseFloat(latest.value) : null,
             date: latest?.date,
             prior: prev ? parseFloat(prev.value) : null,
@@ -2908,14 +3288,14 @@ app.get("/api/v1/fred/market", async (req, res) => {
     if (cached) return res.json(cached);
     const marketIds = ["VIXCLS", "DTWEXBGS", "DCOILWTICO", "DCOILBRENTEU", "GOLDAMGBD228NLBM"];
     const results = {};
-    await Promise.all(marketIds.map(async (id) => {
+    await Promise.all(marketIds.map(async (id2) => {
       try {
-        const obs = await fredFetch(id, { limit: 10 });
+        const obs = await fredFetch(id2, { limit: 10 });
         if (obs?.length) {
           const latest = obs.find((o) => o.value !== ".");
           const prev = obs.find((o, i) => i > 0 && o.value !== ".");
-          results[id] = {
-            name: FRED_SERIES[id].name,
+          results[id2] = {
+            name: FRED_SERIES[id2].name,
             value: latest ? parseFloat(latest.value) : null,
             date: latest?.date,
             prior: prev ? parseFloat(prev.value) : null,
@@ -2938,16 +3318,16 @@ app.get("/api/v1/fred/macro", async (req, res) => {
     if (cached) return res.json(cached);
     const macroIds = ["UNRATE", "CPIAUCSL", "PCEPI", "GDPC1", "FEDFUNDS", "BAMLH0A0HYM2", "UMCSENT", "IC4WSA"];
     const results = {};
-    await Promise.all(macroIds.map(async (id) => {
+    await Promise.all(macroIds.map(async (id2) => {
       try {
-        const obs = await fredFetch(id, { limit: 5 });
+        const obs = await fredFetch(id2, { limit: 5 });
         if (obs?.length) {
           const latest = obs.find((o) => o.value !== ".");
           const prev = obs.find((o, i) => i > 0 && o.value !== ".");
-          results[id] = {
-            name: FRED_SERIES[id].name,
-            category: FRED_SERIES[id].category,
-            frequency: FRED_SERIES[id].frequency,
+          results[id2] = {
+            name: FRED_SERIES[id2].name,
+            category: FRED_SERIES[id2].category,
+            frequency: FRED_SERIES[id2].frequency,
             value: latest ? parseFloat(latest.value) : null,
             date: latest?.date,
             prior: prev ? parseFloat(prev.value) : null,
@@ -4692,6 +5072,45 @@ app.get("/api/v1/bot/backtest", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+app.post("/api/v1/bot/train", async (req, res) => {
+  try {
+    const body = req.body || {};
+    const symbol = (body.symbol || "AAPL").toUpperCase();
+    const range = ["2y", "5y", "10y"].includes(body.range) ? body.range : "5y";
+    const candles = await yahooCandles(symbol, "1d", range).catch(() => []);
+    if (candles.length < 300) {
+      return res.json({ ok: false, error: `Only ${candles.length} bars for ${symbol}; need 300+` });
+    }
+    const result = trainAndRegister(candles, {
+      symbol,
+      range,
+      modelType: body.modelType || "logistic",
+      label: {
+        up: Number(body.up) || 0.03,
+        down: Number(body.down) || 0.02,
+        horizon: parseInt(body.horizon) || 10
+      },
+      testFraction: Number(body.testFraction) || 0.3
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.get("/api/v1/bot/models", (req, res) => res.json(listTrained()));
+app.get("/api/v1/bot/models/published", (req, res) => res.json(listPublished()));
+app.get("/api/v1/bot/models/:id", (req, res) => {
+  const m = getModel(req.params.id);
+  if (!m) return res.status(404).json({ error: "Model not found" });
+  res.json(m);
+});
+app.post("/api/v1/bot/models/:id/publish", (req, res) => {
+  const result = publishModel(req.params.id);
+  res.status(result.ok ? 200 : 409).json(result);
+});
+app.post("/api/v1/bot/models/:id/unpublish", (req, res) => {
+  res.json(unpublish(req.params.id));
 });
 var server_default = app;
 var isDirectRun = process.argv[1] && (process.argv[1].endsWith("server.js") || process.argv[1].endsWith("server"));

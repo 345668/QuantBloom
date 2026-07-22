@@ -11,6 +11,7 @@ import * as bot from './bot/engine.js';
 import * as broker from './bot/alpaca.js';
 import { computeTechnical } from './bot/indicators.js';
 import { runBacktest, walkForward, sweepStrategies } from './bot/backtest.js';
+import * as models from './bot/model-registry.js';
 
 dotenv.config();
 
@@ -2864,6 +2865,56 @@ app.get('/api/v1/bot/backtest', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+
+// ---------------------------------------------------------------------------
+// Model training & registry. Training runs in this local Node process; the
+// publish gate (bot/model-registry.js) decides what may reach the public page.
+// ---------------------------------------------------------------------------
+app.post('/api/v1/bot/train', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const symbol = (body.symbol || 'AAPL').toUpperCase();
+    const range = ['2y', '5y', '10y'].includes(body.range) ? body.range : '5y';
+    const candles = await yahooCandles(symbol, '1d', range).catch(() => []);
+    if (candles.length < 300) {
+      return res.json({ ok: false, error: `Only ${candles.length} bars for ${symbol}; need 300+` });
+    }
+    const result = models.trainAndRegister(candles, {
+      symbol, range,
+      modelType: body.modelType || 'logistic',
+      label: {
+        up: Number(body.up) || 0.03,
+        down: Number(body.down) || 0.02,
+        horizon: parseInt(body.horizon) || 10,
+      },
+      testFraction: Number(body.testFraction) || 0.3,
+    });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/v1/bot/models', (req, res) => res.json(models.listTrained()));
+
+app.get('/api/v1/bot/models/published', (req, res) => res.json(models.listPublished()));
+
+app.get('/api/v1/bot/models/:id', (req, res) => {
+  const m = models.getModel(req.params.id);
+  if (!m) return res.status(404).json({ error: 'Model not found' });
+  res.json(m);
+});
+
+// Gated publish: the server re-checks eligibility, so the client cannot force it.
+app.post('/api/v1/bot/models/:id/publish', (req, res) => {
+  const result = models.publishModel(req.params.id);
+  res.status(result.ok ? 200 : 409).json(result);
+});
+
+app.post('/api/v1/bot/models/:id/unpublish', (req, res) => {
+  res.json(models.unpublish(req.params.id));
 });
 
 // Export for Vercel serverless
