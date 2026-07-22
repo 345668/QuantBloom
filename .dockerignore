@@ -1,0 +1,8 @@
+node_modules
+dist
+.git
+.models
+.env
+.env.local
+Screenshots for Planned AI coding
+*.log
