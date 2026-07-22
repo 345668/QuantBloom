@@ -11,7 +11,11 @@
 
 import { buildDataset, temporalSplit } from './features.js';
 import { trainLogistic, evaluate, modelStrategy } from './model.js';
+import { trainGBM, featureImportance } from './gbm.js';
 import { summarise, deflatedSharpe } from './statistics.js';
+import { loadStore, persist } from './persistence.js';
+
+export const MODEL_TYPES = ['logistic', 'gbm'];
 
 // Publish thresholds. Deliberately demanding — most strategies fail these, and
 // that is the correct outcome, not a bug to be tuned away.
@@ -24,10 +28,12 @@ export const PUBLISH_GATE = {
   minTestRows: 60,           // enough held-out data to judge at all
 };
 
-// Bounded in-memory stores. A production deployment persists these to Postgres
-// / object storage; documented in MODEL_TRAINING.md.
-const trained = [];        // every model trained this session
-const published = [];      // models that cleared the gate and were published
+// Stores are hydrated from disk on load so models survive a restart during
+// local research (persistence.js). On a read-only serverless FS they start
+// empty and stay in-memory — same behaviour, just not durable there.
+const _init = loadStore();
+const trained = _init.trained;       // every model trained
+const published = _init.published;   // models that cleared the gate and were published
 const MAX_TRAINED = 50;
 
 function id() { return `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`; }
@@ -116,8 +122,8 @@ export function trainAndRegister(candles, config = {}) {
     testFraction = 0.3, epochs = 400, lr = 0.1, l2 = 0.01,
   } = config;
 
-  if (modelType !== 'logistic') {
-    return { ok: false, error: `Model type "${modelType}" trains via the local Python pipeline (see MODEL_TRAINING.md), not in-app.` };
+  if (!MODEL_TYPES.includes(modelType)) {
+    return { ok: false, error: `Model type "${modelType}" trains via the local Python pipeline (see MODEL_TRAINING.md), not in-app. In-app: ${MODEL_TYPES.join(', ')}.` };
   }
   if (!candles || candles.length < 300) {
     return { ok: false, error: `Need 300+ bars, got ${candles?.length || 0}` };
@@ -129,7 +135,13 @@ export function trainAndRegister(candles, config = {}) {
   }
 
   const split = temporalSplit(dataset, testFraction);
-  const model = trainLogistic(split.train.X, split.train.y, { epochs, lr, l2, featureNames: dataset.featureNames });
+  const model = modelType === 'gbm'
+    ? trainGBM(split.train.X, split.train.y, {
+        nEstimators: config.nEstimators || 80, maxDepth: config.maxDepth || 3,
+        learningRate: config.learningRate || 0.08, minLeaf: config.minLeaf || 15,
+        featureNames: dataset.featureNames,
+      })
+    : trainLogistic(split.train.X, split.train.y, { epochs, lr, l2, featureNames: dataset.featureNames });
   if (!model) return { ok: false, error: 'Training failed' };
 
   const trainMetrics = evaluate(model, split.train.X, split.train.y);
@@ -146,6 +158,8 @@ export function trainAndRegister(candles, config = {}) {
     config: { label, testFraction, epochs, lr, l2 },
     artifact: model,
     trainMetrics, testMetrics, backtest,
+    // Tree models can say which inputs they used — half the value of a GBM.
+    featureImportance: modelType === 'gbm' ? featureImportance(model).slice(0, 8) : null,
     eligible: gate.eligible,
     gateReasons: gate.reasons,
     published: false,
@@ -153,13 +167,15 @@ export function trainAndRegister(candles, config = {}) {
 
   trained.unshift(record);
   if (trained.length > MAX_TRAINED) trained.length = MAX_TRAINED;
+  persist({ trained, published });
 
   return { ok: true, model: record, gate };
 }
 
 export function listTrained() {
   // Omit the weights from the list view; they are large and fetched per-model.
-  return trained.map(({ artifact, ...rest }) => ({ ...rest, featureCount: artifact.weights.length }));
+  // artifact shape differs by type (weights for logistic, trees for gbm).
+  return trained.map(({ artifact, ...rest }) => ({ ...rest, featureCount: artifact.featureNames?.length ?? 0 }));
 }
 
 export function getModel(modelId) {
@@ -187,6 +203,7 @@ export function publishModel(modelId) {
     testMetrics: m.testMetrics, backtest: m.backtest,
     config: m.config, artifact: m.artifact,
   });
+  persist({ trained, published });
   return { ok: true, published: published.length };
 }
 
@@ -200,5 +217,6 @@ export function unpublish(modelId) {
   published.splice(i, 1);
   const m = getModel(modelId);
   if (m) m.published = false;
+  persist({ trained, published });
   return { ok: true };
 }

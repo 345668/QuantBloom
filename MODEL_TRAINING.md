@@ -7,15 +7,26 @@ gates which ones reach the public page.
 
 | Model family | Runtime | Where |
 |--------------|---------|-------|
-| Logistic regression | JavaScript | **In-app** — `bot/model.js`, trains in the Node server or browser |
+| Logistic regression | JavaScript | **In-app** — `bot/model.js` |
+| Gradient-boosted trees | JavaScript | **In-app** — `bot/gbm.js` |
 | LightGBM / CatBoost | Python | Local pipeline (below) |
 | Latent-factor, SDF, portfolio nets (ml4t-models) | Python / PyTorch | Local pipeline |
 | RL agents (DQN) | Python | Local pipeline |
 
-Only the JS-native logistic model trains inside the app, because the serverless
-runtime cannot host Python or long training jobs (see
-`TRADING_BOT_IMPLEMENTATION.md` §3). Everything heavier trains locally and is
-imported as a model artifact.
+Two models train inside the app. **Gradient-boosted trees** (`bot/gbm.js`) are
+the in-app stand-in for LightGBM/CatBoost — the Friedman construction with
+shallow regression trees fit to log-loss residuals. Unlike logistic regression,
+trees capture non-linear feature interactions ("RSI oversold AND rising volume
+AND above the 200-day"), and a test proves the GBM cracks XOR while logistic
+cannot. GBM also reports **gain-based feature importance**, so you see which
+inputs it used. Heavier families still train via the local Python pipeline and
+import as an artifact.
+
+Empirically the GBM is a real upgrade — on AAPL it lifts test AUC from ~0.51
+(logistic, a coin flip) to ~0.60 with a Deflated Sharpe of ~0.65 — yet it still
+does not clear the publish gate, because long-only market-timing rarely beats
+buy-and-hold in a bull run. That is the honest result: genuine predictive edge
+is not the same as beating buy-and-hold, and the gate holds regardless.
 
 ## The in-app pipeline
 
@@ -136,9 +147,15 @@ the gate does not care which runtime produced the weights.
 
 ## Persistence
 
-Trained and published models live in bounded in-memory stores. A production
-deployment persists them to Postgres (metadata) and object storage (artifacts);
-the in-memory version resets on restart, which is fine for local research.
+Trained and published models are written to `.models/registry.json`
+(`bot/persistence.js`) and reloaded on startup, so a model — and the published
+set behind the public page — survives a restart of the local server. The
+directory is gitignored.
+
+Persistence is best-effort: on a read-only serverless filesystem (Vercel) the
+write silently no-ops and the app runs in-memory only, identically. A production
+deployment swaps the file store for Postgres (metadata) + object storage
+(artifacts) without changing any call site.
 
 ## Honesty
 

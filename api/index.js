@@ -2321,6 +2321,8 @@ var FEATURE_NAMES = [
   // close/SMA20 - 1
   "priceVsSma50",
   // close/SMA50 - 1
+  "priceVsSma200",
+  // close/SMA200 - 1 (long-term regime)
   "bbPosition",
   // position within Bollinger band [0,1]
   "adx",
@@ -2329,8 +2331,20 @@ var FEATURE_NAMES = [
   // ATR(14) / price
   "volumeRatio",
   // volume / 20-bar avg
-  "volatility"
+  "volatility",
   // stdev of last 20 returns
+  "roc20",
+  // 20-bar rate of change
+  "distFrom120High",
+  // distance below the 120-bar high (<= 0)
+  "distFrom120Low",
+  // distance above the 120-bar low (>= 0)
+  "sma20Slope",
+  // 5-bar slope of SMA20 / price
+  "rsiSlope",
+  // change in RSI over 5 bars
+  "volRegime"
+  // short vol / long vol (expansion > 1)
 ];
 var pctReturn = (a, b) => a && b ? (a - b) / b : 0;
 function stdev20(returns) {
@@ -2351,14 +2365,29 @@ function featuresAt(candles, t) {
   const md = macd(closes);
   const sma20 = sma(closes, 20);
   const sma50 = sma(closes, 50);
+  const sma200 = sma(closes, 200);
   const adxv = adx(highs, lows, closes, 14);
   const atrv = atr(highs, lows, closes, 14);
   const rsiv = rsi(closes, 14);
   const avgVol = sma(vols, 20);
-  const recentReturns = [];
-  for (let i = closes.length - 20; i < closes.length; i++) {
-    if (i > 0 && closes[i - 1]) recentReturns.push((closes[i] - closes[i - 1]) / closes[i - 1]);
-  }
+  const returnsFrom = (fromIdx) => {
+    const out = [];
+    for (let i = fromIdx; i < closes.length; i++) {
+      if (i > 0 && closes[i - 1]) out.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+    }
+    return out;
+  };
+  const recentReturns = returnsFrom(closes.length - 20);
+  const lookback = Math.min(120, highs.length);
+  const hi120 = Math.max(...highs.slice(-lookback));
+  const lo120 = Math.min(...lows.slice(-lookback));
+  const sma20Prev = sma(closes.slice(0, closes.length - 5), 20);
+  const sma20Slope = sma20 != null && sma20Prev != null ? (sma20 - sma20Prev) / price : 0;
+  const rsiPrev = rsi(closes.slice(0, closes.length - 5), 14);
+  const rsiSlope = rsiv != null && rsiPrev != null ? (rsiv - rsiPrev) / 100 : 0;
+  const shortVol = stdev20(returnsFrom(closes.length - 10));
+  const longVol = stdev20(returnsFrom(closes.length - 40));
+  const volRegime = longVol > 0 ? shortVol / longVol : 1;
   const vec = [
     pctReturn(price, closes[closes.length - 2]),
     pctReturn(price, closes[closes.length - 6]),
@@ -2367,11 +2396,18 @@ function featuresAt(candles, t) {
     md ? md.histogram / price : 0,
     sma20 ? price / sma20 - 1 : 0,
     sma50 ? price / sma50 - 1 : 0,
+    sma200 ? price / sma200 - 1 : 0,
     bb && bb.upper !== bb.lower ? (price - bb.lower) / (bb.upper - bb.lower) : 0.5,
     adxv ? adxv.adx / 100 : 0,
     atrv ? atrv / price : 0,
     avgVol ? (vols[vols.length - 1] || 0) / avgVol : 1,
-    stdev20(recentReturns)
+    stdev20(recentReturns),
+    pctReturn(price, closes[closes.length - 21]),
+    hi120 > 0 ? (price - hi120) / hi120 : 0,
+    lo120 > 0 ? (price - lo120) / lo120 : 0,
+    sma20Slope,
+    rsiSlope,
+    volRegime
   ];
   return vec.map((v) => Number.isFinite(v) ? v : 0);
 }
@@ -2392,7 +2428,7 @@ function tripleBarrierLabel(candles, t, { up = 0.03, down = 0.02, horizon = 10 }
 }
 function buildDataset(candles, labelConfig = {}) {
   const X = [], y = [], times = [];
-  const warmup = 50;
+  const warmup = 200;
   const horizon = labelConfig.horizon || 10;
   for (let t = warmup; t < candles.length - horizon; t++) {
     const feat = featuresAt(candles, t);
@@ -2416,8 +2452,108 @@ function temporalSplit(dataset, testFraction = 0.3) {
   };
 }
 
-// bot/model.js
+// bot/gbm.js
 var sigmoid = (z) => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))));
+function buildTree(X, residuals, indices, depth, maxDepth, minLeaf) {
+  const leafValue = () => {
+    let s = 0;
+    for (const i of indices) s += residuals[i];
+    return s / indices.length;
+  };
+  if (depth >= maxDepth || indices.length < 2 * minLeaf) {
+    return { leaf: true, value: leafValue() };
+  }
+  const nFeatures = X[0].length;
+  let best = null;
+  for (let f = 0; f < nFeatures; f++) {
+    const vals = indices.map((i) => X[i][f]).sort((a, b) => a - b);
+    for (let t = minLeaf; t < vals.length - minLeaf; t++) {
+      if (vals[t] === vals[t - 1]) continue;
+      const thr = (vals[t] + vals[t - 1]) / 2;
+      let lSum = 0, lCount = 0, rSum = 0, rCount = 0;
+      for (const i of indices) {
+        if (X[i][f] <= thr) {
+          lSum += residuals[i];
+          lCount++;
+        } else {
+          rSum += residuals[i];
+          rCount++;
+        }
+      }
+      if (lCount < minLeaf || rCount < minLeaf) continue;
+      const gain = lSum * lSum / lCount + rSum * rSum / rCount;
+      if (!best || gain > best.gain) best = { feature: f, threshold: thr, gain };
+    }
+  }
+  if (!best) return { leaf: true, value: leafValue() };
+  const left = [], right = [];
+  for (const i of indices) (X[i][best.feature] <= best.threshold ? left : right).push(i);
+  return {
+    leaf: false,
+    feature: best.feature,
+    threshold: best.threshold,
+    left: buildTree(X, residuals, left, depth + 1, maxDepth, minLeaf),
+    right: buildTree(X, residuals, right, depth + 1, maxDepth, minLeaf)
+  };
+}
+function predictTree(node, row) {
+  while (!node.leaf) node = row[node.feature] <= node.threshold ? node.left : node.right;
+  return node.value;
+}
+function trainGBM(X, y, opts = {}) {
+  const {
+    nEstimators = 60,
+    maxDepth = 3,
+    learningRate = 0.1,
+    minLeaf = 10,
+    featureNames = []
+  } = opts;
+  if (!X.length || X.length !== y.length) return null;
+  const n = X.length;
+  const posRate = y.reduce((a, b) => a + b, 0) / n;
+  const p0 = Math.min(Math.max(posRate, 1e-3), 1 - 1e-3);
+  const baseScore = Math.log(p0 / (1 - p0));
+  const F = new Array(n).fill(baseScore);
+  const trees = [];
+  const allIdx = Array.from({ length: n }, (_, i) => i);
+  for (let m = 0; m < nEstimators; m++) {
+    const residuals = F.map((f, i) => y[i] - sigmoid(f));
+    const tree = buildTree(X, residuals, allIdx, 0, maxDepth, minLeaf);
+    trees.push(tree);
+    for (let i = 0; i < n; i++) F[i] += learningRate * predictTree(tree, X[i]);
+  }
+  return {
+    type: "gbm",
+    baseScore: +baseScore.toFixed(6),
+    learningRate,
+    nEstimators,
+    maxDepth,
+    trees,
+    featureNames,
+    trainedOn: n
+  };
+}
+function predictProbaGBM(model2, row) {
+  let F = model2.baseScore;
+  for (const tree of model2.trees) F += model2.learningRate * predictTree(tree, row);
+  return sigmoid(F);
+}
+function featureImportance(model2) {
+  const k = model2.featureNames.length || 0;
+  const imp = new Array(k).fill(0);
+  const walk = (node) => {
+    if (node.leaf) return;
+    imp[node.feature] += 1;
+    walk(node.left);
+    walk(node.right);
+  };
+  for (const t of model2.trees) walk(t);
+  const total = imp.reduce((a, b) => a + b, 0) || 1;
+  return model2.featureNames.map((name, i) => ({ name, importance: +(imp[i] / total).toFixed(4) })).sort((a, b) => b.importance - a.importance);
+}
+
+// bot/model.js
+var sigmoid2 = (z) => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))));
 function fitScaler(X) {
   const k = X[0].length, n = X.length;
   const means = new Array(k).fill(0), stds = new Array(k).fill(0);
@@ -2440,7 +2576,7 @@ function trainLogistic(X, y, opts = {}) {
     const gw = new Array(k).fill(0);
     let gb = 0, loss = 0;
     for (let i = 0; i < n; i++) {
-      const p = sigmoid(Xs[i].reduce((s, v, j) => s + v * w[j], b));
+      const p = sigmoid2(Xs[i].reduce((s, v, j) => s + v * w[j], b));
       const err = p - y[i];
       for (let j = 0; j < k; j++) gw[j] += err * Xs[i][j];
       gb += err;
@@ -2465,9 +2601,10 @@ function trainLogistic(X, y, opts = {}) {
   };
 }
 function predictProba(model2, featureRow) {
+  if (model2.type === "gbm") return predictProbaGBM(model2, featureRow);
   const s = model2.scaler;
   const z = featureRow.reduce((acc, v, j) => acc + (v - s.means[j]) / s.stds[j] * model2.weights[j], model2.bias);
-  return sigmoid(z);
+  return sigmoid2(z);
 }
 function evaluate(model2, X, y) {
   if (!X.length) return null;
@@ -2516,7 +2653,44 @@ function modelStrategy(model2, candles, t, { buyThreshold = 0.55, sellThreshold 
   return { action: "HOLD", confidence: 0, rationale: `Model P(up)=${p.toFixed(2)} \u2014 near coin flip` };
 }
 
+// bot/persistence.js
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+var DIR = process.env.MODEL_STORE_DIR || join(dirname(fileURLToPath(import.meta.url)), "..", ".models");
+var FILE = join(DIR, "registry.json");
+var writable = true;
+function loadStore() {
+  try {
+    if (!existsSync(FILE)) return { trained: [], published: [] };
+    const data = JSON.parse(readFileSync(FILE, "utf8"));
+    return {
+      trained: Array.isArray(data.trained) ? data.trained : [],
+      published: Array.isArray(data.published) ? data.published : []
+    };
+  } catch {
+    return { trained: [], published: [] };
+  }
+}
+function persist(store) {
+  if (!writable) return false;
+  try {
+    if (!existsSync(DIR)) mkdirSync(DIR, { recursive: true });
+    const payload = {
+      savedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      trained: (store.trained || []).slice(0, 50),
+      published: store.published || []
+    };
+    writeFileSync(FILE, JSON.stringify(payload), "utf8");
+    return true;
+  } catch {
+    writable = false;
+    return false;
+  }
+}
+
 // bot/model-registry.js
+var MODEL_TYPES = ["logistic", "gbm"];
 var PUBLISH_GATE = {
   minTestAuc: 0.55,
   // better than a coin flip at telling up from down
@@ -2531,8 +2705,9 @@ var PUBLISH_GATE = {
   minTestRows: 60
   // enough held-out data to judge at all
 };
-var trained = [];
-var published = [];
+var _init = loadStore();
+var trained = _init.trained;
+var published = _init.published;
 var MAX_TRAINED = 50;
 function id() {
   return `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -2611,8 +2786,8 @@ function trainAndRegister(candles, config = {}) {
     lr = 0.1,
     l2 = 0.01
   } = config;
-  if (modelType !== "logistic") {
-    return { ok: false, error: `Model type "${modelType}" trains via the local Python pipeline (see MODEL_TRAINING.md), not in-app.` };
+  if (!MODEL_TYPES.includes(modelType)) {
+    return { ok: false, error: `Model type "${modelType}" trains via the local Python pipeline (see MODEL_TRAINING.md), not in-app. In-app: ${MODEL_TYPES.join(", ")}.` };
   }
   if (!candles || candles.length < 300) {
     return { ok: false, error: `Need 300+ bars, got ${candles?.length || 0}` };
@@ -2622,7 +2797,13 @@ function trainAndRegister(candles, config = {}) {
     return { ok: false, error: `Only ${dataset.X.length} labeled rows; need 100+` };
   }
   const split = temporalSplit(dataset, testFraction);
-  const model2 = trainLogistic(split.train.X, split.train.y, { epochs, lr, l2, featureNames: dataset.featureNames });
+  const model2 = modelType === "gbm" ? trainGBM(split.train.X, split.train.y, {
+    nEstimators: config.nEstimators || 80,
+    maxDepth: config.maxDepth || 3,
+    learningRate: config.learningRate || 0.08,
+    minLeaf: config.minLeaf || 15,
+    featureNames: dataset.featureNames
+  }) : trainLogistic(split.train.X, split.train.y, { epochs, lr, l2, featureNames: dataset.featureNames });
   if (!model2) return { ok: false, error: "Training failed" };
   const trainMetrics = evaluate(model2, split.train.X, split.train.y);
   const testMetrics = evaluate(model2, split.test.X, split.test.y);
@@ -2640,16 +2821,19 @@ function trainAndRegister(candles, config = {}) {
     trainMetrics,
     testMetrics,
     backtest,
+    // Tree models can say which inputs they used — half the value of a GBM.
+    featureImportance: modelType === "gbm" ? featureImportance(model2).slice(0, 8) : null,
     eligible: gate.eligible,
     gateReasons: gate.reasons,
     published: false
   };
   trained.unshift(record);
   if (trained.length > MAX_TRAINED) trained.length = MAX_TRAINED;
+  persist({ trained, published });
   return { ok: true, model: record, gate };
 }
 function listTrained() {
-  return trained.map(({ artifact, ...rest }) => ({ ...rest, featureCount: artifact.weights.length }));
+  return trained.map(({ artifact, ...rest }) => ({ ...rest, featureCount: artifact.featureNames?.length ?? 0 }));
 }
 function getModel(modelId) {
   return trained.find((m) => m.id === modelId) || null;
@@ -2673,6 +2857,7 @@ function publishModel(modelId) {
     config: m.config,
     artifact: m.artifact
   });
+  persist({ trained, published });
   return { ok: true, published: published.length };
 }
 function listPublished() {
@@ -2684,6 +2869,7 @@ function unpublish(modelId) {
   published.splice(i, 1);
   const m = getModel(modelId);
   if (m) m.published = false;
+  persist({ trained, published });
   return { ok: true };
 }
 

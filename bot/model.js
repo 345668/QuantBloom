@@ -14,6 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import { featuresAt, FEATURE_NAMES } from './features.js';
+import { predictProbaGBM } from './gbm.js';
 
 const sigmoid = z => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))));
 
@@ -78,8 +79,13 @@ export function trainLogistic(X, y, opts = {}) {
   };
 }
 
-/** Probability that the next move clears the up-barrier, for one feature row. */
+/**
+ * Probability that the next move clears the up-barrier, for one feature row.
+ * Dispatches on model type so every downstream consumer — evaluate(),
+ * modelStrategy(), the backtest — works for any model family unchanged.
+ */
 export function predictProba(model, featureRow) {
+  if (model.type === 'gbm') return predictProbaGBM(model, featureRow);
   const s = model.scaler;
   const z = featureRow.reduce((acc, v, j) => acc + ((v - s.means[j]) / s.stds[j]) * model.weights[j], model.bias);
   return sigmoid(z);

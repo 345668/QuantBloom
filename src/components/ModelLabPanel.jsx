@@ -23,6 +23,7 @@ export default function ModelLabPanel() {
   const { state } = useDashboard();
   const [symbol, setSymbol] = useState('AAPL');
   const [range, setRange] = useState('5y');
+  const [modelType, setModelType] = useState('gbm');
   const [horizon, setHorizon] = useState(10);
   const [up, setUp] = useState(3);
   const [down, setDown] = useState(2);
@@ -42,7 +43,7 @@ export default function ModelLabPanel() {
     setBusy(true); setError(null); setResult(null);
     try {
       const r = await post('/api/v1/bot/train', {
-        symbol, range, horizon, up: up / 100, down: down / 100,
+        symbol, range, modelType, horizon, up: up / 100, down: down / 100,
       });
       if (!r.ok) setError(r.error || 'Training failed');
       else setResult(r);
@@ -91,12 +92,22 @@ export default function ModelLabPanel() {
             <label className="ml-lab">Down %<input type="number" value={down} onChange={e => setDown(+e.target.value || 2)} /></label>
           </div>
 
+          <div className="ml-modeltype">
+            {[['gbm', 'Gradient boosting'], ['logistic', 'Logistic']].map(([k, label]) => (
+              <button key={k} className={`ml-mt-btn ${modelType === k ? 'active' : ''}`}
+                onClick={() => setModelType(k)}
+                title={k === 'gbm' ? 'Tree ensemble — captures non-linear feature interactions' : 'Linear baseline'}>
+                {label}
+              </button>
+            ))}
+          </div>
+
           <button className="ml-train" onClick={train} disabled={busy}>
-            {busy ? 'Training…' : 'Train logistic model'}
+            {busy ? 'Training…' : `Train ${modelType === 'gbm' ? 'gradient-boosting' : 'logistic'} model`}
           </button>
           <div className="ml-hint">
-            Triple-barrier labels · point-in-time features · temporal 70/30 split.
-            Heavier models (LightGBM, RL) train via the local Python pipeline — see MODEL_TRAINING.md.
+            19 point-in-time features · triple-barrier labels · temporal 70/30 split.
+            LightGBM/CatBoost & RL train via the local Python pipeline — see MODEL_TRAINING.md.
           </div>
 
           {error && <div className="ml-error">{error}</div>}
@@ -119,6 +130,19 @@ export default function ModelLabPanel() {
                       <td className="ml-dim">luck-adjusted</td></tr>
                 </tbody>
               </table>
+
+              {m.featureImportance && (
+                <div className="ml-importance">
+                  <div className="ml-imp-title">What the model used</div>
+                  {m.featureImportance.slice(0, 5).map(f => (
+                    <div key={f.name} className="ml-imp-row">
+                      <span className="ml-imp-name">{f.name}</span>
+                      <div className="ml-imp-track"><div className="ml-imp-fill" style={{ width: `${Math.min(f.importance * 100 * 2.5, 100)}%` }} /></div>
+                      <span className="ml-imp-val">{(f.importance * 100).toFixed(0)}%</span>
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {!gate.eligible && (
                 <ul className="ml-reasons">

@@ -21,11 +21,18 @@ export const FEATURE_NAMES = [
   'macdHist',                   // MACD histogram / price
   'priceVsSma20',               // close/SMA20 - 1
   'priceVsSma50',               // close/SMA50 - 1
+  'priceVsSma200',              // close/SMA200 - 1 (long-term regime)
   'bbPosition',                 // position within Bollinger band [0,1]
   'adx',                        // trend strength / 100
   'atrPct',                     // ATR(14) / price
   'volumeRatio',                // volume / 20-bar avg
   'volatility',                 // stdev of last 20 returns
+  'roc20',                      // 20-bar rate of change
+  'distFrom120High',            // distance below the 120-bar high (<= 0)
+  'distFrom120Low',             // distance above the 120-bar low (>= 0)
+  'sma20Slope',                 // 5-bar slope of SMA20 / price
+  'rsiSlope',                   // change in RSI over 5 bars
+  'volRegime',                  // short vol / long vol (expansion > 1)
 ];
 
 const pctReturn = (a, b) => (a && b) ? (a - b) / b : 0;
@@ -54,15 +61,38 @@ export function featuresAt(candles, t) {
   const md = macd(closes);
   const sma20 = sma(closes, 20);
   const sma50 = sma(closes, 50);
+  const sma200 = sma(closes, 200);
   const adxv = adx(highs, lows, closes, 14);
   const atrv = atr(highs, lows, closes, 14);
   const rsiv = rsi(closes, 14);
   const avgVol = sma(vols, 20);
 
-  const recentReturns = [];
-  for (let i = closes.length - 20; i < closes.length; i++) {
-    if (i > 0 && closes[i - 1]) recentReturns.push((closes[i] - closes[i - 1]) / closes[i - 1]);
-  }
+  const returnsFrom = (fromIdx) => {
+    const out = [];
+    for (let i = fromIdx; i < closes.length; i++) {
+      if (i > 0 && closes[i - 1]) out.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+    }
+    return out;
+  };
+  const recentReturns = returnsFrom(closes.length - 20);
+
+  // 120-bar (≈6 month) range position — where price sits in its recent range.
+  const lookback = Math.min(120, highs.length);
+  const hi120 = Math.max(...highs.slice(-lookback));
+  const lo120 = Math.min(...lows.slice(-lookback));
+
+  // 5-bar SMA20 slope: is the trend accelerating?
+  const sma20Prev = sma(closes.slice(0, closes.length - 5), 20);
+  const sma20Slope = (sma20 != null && sma20Prev != null) ? (sma20 - sma20Prev) / price : 0;
+
+  // RSI momentum.
+  const rsiPrev = rsi(closes.slice(0, closes.length - 5), 14);
+  const rsiSlope = (rsiv != null && rsiPrev != null) ? (rsiv - rsiPrev) / 100 : 0;
+
+  // Volatility regime: recent 10-bar vol vs the prior 20-bar vol.
+  const shortVol = stdev20(returnsFrom(closes.length - 10));
+  const longVol = stdev20(returnsFrom(closes.length - 40));
+  const volRegime = longVol > 0 ? shortVol / longVol : 1;
 
   const vec = [
     pctReturn(price, closes[closes.length - 2]),
@@ -72,11 +102,18 @@ export function featuresAt(candles, t) {
     md ? md.histogram / price : 0,
     sma20 ? price / sma20 - 1 : 0,
     sma50 ? price / sma50 - 1 : 0,
+    sma200 ? price / sma200 - 1 : 0,
     bb && bb.upper !== bb.lower ? (price - bb.lower) / (bb.upper - bb.lower) : 0.5,
     adxv ? adxv.adx / 100 : 0,
     atrv ? atrv / price : 0,
     avgVol ? (vols[vols.length - 1] || 0) / avgVol : 1,
     stdev20(recentReturns),
+    pctReturn(price, closes[closes.length - 21]),
+    hi120 > 0 ? (price - hi120) / hi120 : 0,
+    lo120 > 0 ? (price - lo120) / lo120 : 0,
+    sma20Slope,
+    rsiSlope,
+    volRegime,
   ];
 
   // Guard against any NaN/Infinity leaking into training.
@@ -121,7 +158,9 @@ export function tripleBarrierLabel(candles, t, { up = 0.03, down = 0.02, horizon
  */
 export function buildDataset(candles, labelConfig = {}) {
   const X = [], y = [], times = [];
-  const warmup = 50;
+  // 200 bars so the SMA200 and long-lookback features are fully formed from the
+  // first training row — degraded early features are just noise to the model.
+  const warmup = 200;
   const horizon = labelConfig.horizon || 10;
 
   for (let t = warmup; t < candles.length - horizon; t++) {
