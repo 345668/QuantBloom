@@ -2360,3 +2360,10 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
   border: 1px solid var(--border-bright); background: var(--bg-secondary); line-height: 1.45;
 }
 .bot-notice code { color: var(--accent-blue); font-size: 9px; }
+
+/* --- Chart type selector --- */
+.charttype-select {
+  background: var(--bg-input); border: 1px solid var(--border); color: var(--text-body);
+  font-family: inherit; font-size: 10px; padding: 2px 4px; margin-left: 6px;
+}
+.charttype-select:focus { border-color: var(--text-primary); outline: none; }

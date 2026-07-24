@@ -4,6 +4,7 @@ import { useDashboard } from '../context/DashboardContext.jsx';
 import { usePolling } from '../hooks/usePolling.js';
 import { formatPrice, formatPct, formatVolume } from '../utils/format.js';
 import ChartDrawings, { TOOLS } from './ChartDrawings.jsx';
+import { CHART_TYPES, transformForType } from '../../charting/chart-types.js';
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '1D', '1W', '1M', '1Y', '5Y'];
 const OVERLAYS = ['MA', 'BB', 'RSI', 'MACD'];
@@ -89,6 +90,7 @@ export default function ChartPanel() {
   const [searchResults, setSearchResults] = useState([]);
   const [quoteData, setQuoteData] = useState(null);
   const [activeTool, setActiveTool] = useState(null);
+  const [chartType, setChartType] = useState('candles');
 
   const { data: candleData, loading } = usePolling(
     `/api/v1/candles?symbol=${activeSymbol}&resolution=${activeTimeframe}`,
@@ -159,15 +161,27 @@ export default function ChartPanel() {
     });
     chartRef.current = chart;
 
-    const candleSeries = chart.addCandlestickSeries({
-      upColor: '#00cc44',
-      downColor: '#cc2200',
-      borderUpColor: '#00cc44',
-      borderDownColor: '#cc2200',
-      wickUpColor: '#00cc44',
-      wickDownColor: '#cc2200',
-    });
-    seriesRef.current.candle = candleSeries;
+    // Build the base series according to the selected chart type.
+    const spec = CHART_TYPES.find(t => t.key === chartType) || CHART_TYPES[0];
+    const UP = '#00cc44', DOWN = '#cc2200';
+    let baseSeries;
+    if (spec.kind === 'line') {
+      baseSeries = chart.addLineSeries({ color: '#FF8C00', lineWidth: 2, priceLineVisible: true });
+    } else if (spec.kind === 'area') {
+      baseSeries = chart.addAreaSeries({ lineColor: '#FF8C00', topColor: 'rgba(255,140,0,0.35)', bottomColor: 'rgba(255,140,0,0.02)', lineWidth: 2 });
+    } else if (spec.kind === 'bar') {
+      baseSeries = chart.addBarSeries({ upColor: UP, downColor: DOWN });
+    } else {
+      // candlestick family; hollow = transparent up body with coloured border.
+      baseSeries = chart.addCandlestickSeries({
+        upColor: spec.hollow ? 'rgba(0,0,0,0)' : UP,
+        downColor: DOWN,
+        borderUpColor: UP, borderDownColor: DOWN,
+        wickUpColor: UP, wickDownColor: DOWN,
+      });
+    }
+    seriesRef.current.candle = baseSeries;
+    seriesRef.current.kind = spec.kind;
 
     const resizeObserver = new ResizeObserver(entries => {
       for (const entry of entries) {
@@ -182,14 +196,22 @@ export default function ChartPanel() {
       chartRef.current = null;
       seriesRef.current = {};
     };
-  }, [activeSymbol, activeTimeframe]);
+  }, [activeSymbol, activeTimeframe, chartType]);
 
   // Update data
   useEffect(() => {
     if (!candleData?.candles?.length || !seriesRef.current.candle || !chartRef.current) return;
 
     const candles = candleData.candles;
-    seriesRef.current.candle.setData(candles);
+    // Apply the chart-type transform (Heikin-Ashi / Renko / Line Break) or use
+    // the raw candles; line/area want {time,value}, others want OHLC.
+    const spec = CHART_TYPES.find(t => t.key === chartType) || CHART_TYPES[0];
+    const shaped = transformForType(spec.transform, candles);
+    if (spec.kind === 'line' || spec.kind === 'area') {
+      seriesRef.current.candle.setData(shaped.map(c => ({ time: c.time, value: c.close })));
+    } else {
+      seriesRef.current.candle.setData(shaped);
+    }
 
     ['ma', 'bbUpper', 'bbLower'].forEach(key => {
       if (seriesRef.current[key]) {
@@ -232,7 +254,7 @@ export default function ChartPanel() {
     }
 
     chartRef.current.timeScale().fitContent();
-  }, [candleData, activeOverlays]);
+  }, [candleData, activeOverlays, chartType]);
 
   function selectSymbol(sym) {
     dispatch({ type: 'SET_SYMBOL', payload: sym });
@@ -309,6 +331,10 @@ export default function ChartPanel() {
             </button>
           ))}
         </div>
+        <select className="charttype-select" value={chartType}
+          onChange={e => setChartType(e.target.value)} title="Chart type">
+          {CHART_TYPES.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+        </select>
         <div className="overlay-btns">
           {OVERLAYS.map(ol => (
             <button
