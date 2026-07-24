@@ -439,6 +439,7 @@ export default function ChartPanel() {
           symbol={activeSymbol}
           tool={activeTool}
           onToolDone={() => setActiveTool(null)}
+          candles={candleData?.candles || []}
         />
       </div>
       {activeOverlays.includes('RSI') && candleData?.candles && (

@@ -2391,3 +2391,13 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
 .ind-chip:hover { border-color: var(--accent-down); color: var(--accent-down); }
 .ind-chip-x { color: var(--accent-down); font-weight: 700; margin-left: 2px; }
 .subchart-remove { color: var(--accent-down); font-weight: 700; font-size: 11px; margin-left: 6px; line-height: 1; }
+
+/* --- Phase 3 drawing tools --- */
+.dw-channel-fill { fill: rgba(176, 96, 255, 0.08); stroke: none; }
+.dw-text { fill: var(--accent-purple); font-size: 11px; font-family: inherit; font-weight: 600; }
+.dw-measure-up { fill: rgba(0, 204, 68, 0.15); stroke: var(--accent-up); stroke-width: 1; }
+.dw-measure-down { fill: rgba(204, 34, 0, 0.15); stroke: var(--accent-down); stroke-width: 1; }
+.dw-pos-reward { fill: rgba(0, 204, 68, 0.14); stroke: none; }
+.dw-pos-risk { fill: rgba(204, 34, 0, 0.16); stroke: none; }
+.dw-label.positive { fill: var(--accent-up); }
+.dw-label.negative { fill: var(--accent-down); }
