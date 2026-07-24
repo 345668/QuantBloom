@@ -5,6 +5,7 @@ import { usePolling } from '../hooks/usePolling.js';
 import { formatPrice, formatPct, formatVolume } from '../utils/format.js';
 import ChartDrawings, { TOOLS } from './ChartDrawings.jsx';
 import { CHART_TYPES, transformForType } from '../../charting/chart-types.js';
+import { INDICATORS } from '../../charting/indicators.js';
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1h', '1D', '1W', '1M', '1Y', '5Y'];
 const OVERLAYS = ['MA', 'BB', 'RSI', 'MACD'];
@@ -91,6 +92,15 @@ export default function ChartPanel() {
   const [quoteData, setQuoteData] = useState(null);
   const [activeTool, setActiveTool] = useState(null);
   const [chartType, setChartType] = useState('candles');
+  // Indicators added via the manager (beyond the legacy MA/BB/RSI/MACD toggles).
+  const [extraIndicators, setExtraIndicators] = useState([]);
+  const [showIndPicker, setShowIndPicker] = useState(false);
+
+  const addIndicator = (key) => {
+    setExtraIndicators(list => [...list, { id: `${key}-${Date.now()}`, key }]);
+    setShowIndPicker(false);
+  };
+  const removeIndicator = (id) => setExtraIndicators(list => list.filter(i => i.id !== id));
 
   const { data: candleData, loading } = usePolling(
     `/api/v1/candles?symbol=${activeSymbol}&resolution=${activeTimeframe}`,
@@ -256,6 +266,38 @@ export default function ChartPanel() {
     chartRef.current.timeScale().fitContent();
   }, [candleData, activeOverlays, chartType]);
 
+  // Sync price-pane indicators from the manager as line series.
+  useEffect(() => {
+    if (!candleData?.candles?.length || !chartRef.current) return;
+    const chart = chartRef.current;
+    // Remove any previously-drawn manager overlays.
+    Object.keys(seriesRef.current).filter(k => k.startsWith('ind_')).forEach(k => {
+      try { chart.removeSeries(seriesRef.current[k]); } catch {}
+      delete seriesRef.current[k];
+    });
+    const candles = candleData.candles;
+    for (const ind of extraIndicators) {
+      const def = INDICATORS[ind.key];
+      if (!def || def.pane !== 'price') continue;
+      const data = def.fn(candles, def.params);
+      if (def.multi) {
+        for (const band of def.multi) {
+          const s = chart.addLineSeries({ color: def.color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+          s.setData(data[band] || []);
+          seriesRef.current[`ind_${ind.id}_${band}`] = s;
+        }
+      } else if (def.dots) {
+        const s = chart.addLineSeries({ color: def.color, lineWidth: 1, lineStyle: 2, priceLineVisible: false, lastValueVisible: false });
+        s.setData(data);
+        seriesRef.current[`ind_${ind.id}`] = s;
+      } else {
+        const s = chart.addLineSeries({ color: def.color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+        s.setData(data);
+        seriesRef.current[`ind_${ind.id}`] = s;
+      }
+    }
+  }, [candleData, extraIndicators, chartType]);
+
   function selectSymbol(sym) {
     dispatch({ type: 'SET_SYMBOL', payload: sym });
     setSearchTerm('');
@@ -346,6 +388,29 @@ export default function ChartPanel() {
             </button>
           ))}
         </div>
+        <div className="indicator-manager">
+          <button className="ind-add-btn" onClick={() => setShowIndPicker(v => !v)} title="Add indicator">
+            + IND
+          </button>
+          {showIndPicker && (
+            <div className="ind-picker">
+              <div className="ind-picker-group">Overlays</div>
+              {Object.entries(INDICATORS).filter(([, d]) => d.pane === 'price').map(([key, d]) => (
+                <button key={key} className="ind-picker-item" onClick={() => addIndicator(key)}>{d.name}</button>
+              ))}
+              <div className="ind-picker-group">Oscillators</div>
+              {Object.entries(INDICATORS).filter(([, d]) => d.pane === 'sub').map(([key, d]) => (
+                <button key={key} className="ind-picker-item" onClick={() => addIndicator(key)}>{d.name}</button>
+              ))}
+            </div>
+          )}
+          {extraIndicators.map(ind => (
+            <button key={ind.id} className="ind-chip" onClick={() => removeIndicator(ind.id)}
+              title="Remove indicator">
+              {INDICATORS[ind.key]?.name} <span className="ind-chip-x">×</span>
+            </button>
+          ))}
+        </div>
         <div className="draw-btns">
           {TOOLS.map(t => (
             <button
@@ -382,6 +447,64 @@ export default function ChartPanel() {
       {activeOverlays.includes('MACD') && candleData?.candles && (
         <MACDSubChart candles={candleData.candles} />
       )}
+      {candleData?.candles && extraIndicators
+        .filter(ind => INDICATORS[ind.key]?.pane === 'sub')
+        .map(ind => (
+          <IndicatorSubChart key={ind.id} indKey={ind.key} candles={candleData.candles}
+            onRemove={() => removeIndicator(ind.id)} />
+        ))}
+    </div>
+  );
+}
+
+// Generalised oscillator sub-pane driven by the indicator registry.
+function IndicatorSubChart({ indKey, candles, onRemove }) {
+  const ref = useRef(null);
+  const chartInst = useRef(null);
+  const def = INDICATORS[indKey];
+
+  useEffect(() => {
+    if (!ref.current || !def) return;
+    if (chartInst.current) { chartInst.current.remove(); chartInst.current = null; }
+    const chart = createChart(ref.current, {
+      width: ref.current.clientWidth, height: 100,
+      layout: { background: { color: '#0a0a0a' }, textColor: '#666', fontFamily: "'JetBrains Mono', monospace", fontSize: 10 },
+      grid: { vertLines: { color: '#1a1a1a' }, horzLines: { color: '#1a1a1a' } },
+      rightPriceScale: { borderColor: '#2a2a2a' },
+      timeScale: { visible: false },
+    });
+    chartInst.current = chart;
+
+    const data = def.fn(candles, def.params);
+    if (def.histogram && data.macd) {
+      chart.addLineSeries({ color: '#00aaff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData(data.macd);
+      chart.addLineSeries({ color: '#FF8C00', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData(data.signal);
+      chart.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false })
+        .setData(data.histogram.map(d => ({ time: d.time, value: d.value, color: d.value >= 0 ? '#00cc44' : '#cc2200' })));
+    } else if (def.multi && !Array.isArray(data)) {
+      const colors = ['#b060ff', '#FF8C00'];
+      def.multi.forEach((band, i) => {
+        chart.addLineSeries({ color: colors[i % colors.length], lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData(data[band] || []);
+      });
+    } else {
+      chart.addLineSeries({ color: def.color || '#b060ff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false }).setData(data);
+    }
+    // Reference bands (e.g. RSI 30/70).
+    if (def.bands && Array.isArray(data) === false) { /* multi handled above */ }
+
+    chart.timeScale().fitContent();
+    const ro = new ResizeObserver(entries => chart.applyOptions({ width: entries[0].contentRect.width }));
+    ro.observe(ref.current);
+    return () => { ro.disconnect(); chart.remove(); chartInst.current = null; };
+  }, [indKey, candles]);
+
+  return (
+    <div className="subchart">
+      <span className="subchart-label">
+        {def?.name}
+        <button className="subchart-remove" onClick={onRemove} title="Remove">×</button>
+      </span>
+      <div ref={ref} />
     </div>
   );
 }

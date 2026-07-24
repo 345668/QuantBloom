@@ -2367,3 +2367,27 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
   font-family: inherit; font-size: 10px; padding: 2px 4px; margin-left: 6px;
 }
 .charttype-select:focus { border-color: var(--text-primary); outline: none; }
+
+/* --- Indicator manager --- */
+.indicator-manager { display: flex; align-items: center; gap: 3px; position: relative; margin-left: 6px; flex-wrap: wrap; }
+.ind-add-btn {
+  padding: 2px 7px; font-size: 9px; font-weight: 700; border: 1px solid var(--accent-blue);
+  color: var(--accent-blue); white-space: nowrap;
+}
+.ind-add-btn:hover { background: var(--accent-blue); color: #fff; }
+.ind-picker {
+  position: absolute; top: 100%; left: 0; z-index: 20; margin-top: 3px;
+  background: var(--bg-panel); border: 1px solid var(--border-bright);
+  padding: 4px; min-width: 130px; max-height: 280px; overflow-y: auto;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+.ind-picker-group { font-size: 8px; text-transform: uppercase; color: var(--text-dim); padding: 3px 4px 1px; letter-spacing: 0.06em; }
+.ind-picker-item { display: block; width: 100%; text-align: left; padding: 3px 6px; font-size: 10px; color: var(--text-body); }
+.ind-picker-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.ind-chip {
+  padding: 1px 5px; font-size: 9px; border: 1px solid var(--border); color: var(--text-secondary);
+  white-space: nowrap;
+}
+.ind-chip:hover { border-color: var(--accent-down); color: var(--accent-down); }
+.ind-chip-x { color: var(--accent-down); font-weight: 700; margin-left: 2px; }
+.subchart-remove { color: var(--accent-down); font-weight: 700; font-size: 11px; margin-left: 6px; line-height: 1; }
