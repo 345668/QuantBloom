@@ -38,6 +38,7 @@ import StressTestPanel from './components/StressTestPanel.jsx';
 import StrategyBuilder from './components/StrategyBuilder.jsx';
 import BotPanel from './components/BotPanel.jsx';
 import BacktestPanel from './components/BacktestPanel.jsx';
+import MultiChartPanel from './components/MultiChartPanel.jsx';
 import ModelLabPanel from './components/ModelLabPanel.jsx';
 
 function Dashboard() {
@@ -87,6 +88,11 @@ function Dashboard() {
           <CompanyProfile />
           <AnalystPanel />
         </div>
+      </div>
+
+      {/* Row 1b: Multi-chart grid */}
+      <div className="dashboard-row row-1col">
+        <MultiChartPanel />
       </div>
 
       {/* Row 2: Bot + Backtest + Markets board */}
