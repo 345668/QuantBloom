@@ -4,6 +4,7 @@ import { useDashboard } from '../context/DashboardContext.jsx';
 import { usePolling } from '../hooks/usePolling.js';
 import { formatPrice, formatPct, formatVolume } from '../utils/format.js';
 import ChartDrawings, { TOOLS } from './ChartDrawings.jsx';
+import VolumeProfile from './VolumeProfile.jsx';
 import { CHART_TYPES, transformForType } from '../../charting/chart-types.js';
 import { INDICATORS } from '../../charting/indicators.js';
 
@@ -95,6 +96,8 @@ export default function ChartPanel() {
   // Indicators added via the manager (beyond the legacy MA/BB/RSI/MACD toggles).
   const [extraIndicators, setExtraIndicators] = useState([]);
   const [showIndPicker, setShowIndPicker] = useState(false);
+  const [showVolProfile, setShowVolProfile] = useState(false);
+  const [showSR, setShowSR] = useState(false);
 
   const addIndicator = (key) => {
     setExtraIndicators(list => [...list, { id: `${key}-${Date.now()}`, key }]);
@@ -387,6 +390,10 @@ export default function ChartPanel() {
               {ol}
             </button>
           ))}
+          <button className={`ol-btn ${showVolProfile ? 'active' : ''}`}
+            onClick={() => setShowVolProfile(v => !v)} title="Volume profile">VP</button>
+          <button className={`ol-btn ${showSR ? 'active' : ''}`}
+            onClick={() => setShowSR(v => !v)} title="Support / resistance">S/R</button>
         </div>
         <div className="indicator-manager">
           <button className="ind-add-btn" onClick={() => setShowIndPicker(v => !v)} title="Add indicator">
@@ -441,6 +448,16 @@ export default function ChartPanel() {
           onToolDone={() => setActiveTool(null)}
           candles={candleData?.candles || []}
         />
+        {(showVolProfile || showSR) && (
+          <VolumeProfile
+            chartRef={chartRef}
+            seriesRef={seriesRef}
+            containerRef={chartContainerRef}
+            candles={candleData?.candles || []}
+            showProfile={showVolProfile}
+            showSR={showSR}
+          />
+        )}
       </div>
       {activeOverlays.includes('RSI') && candleData?.candles && (
         <RSISubChart candles={candleData.candles} />

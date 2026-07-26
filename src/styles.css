@@ -2401,3 +2401,13 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
 .dw-pos-risk { fill: rgba(204, 34, 0, 0.16); stroke: none; }
 .dw-label.positive { fill: var(--accent-up); }
 .dw-label.negative { fill: var(--accent-down); }
+
+/* --- Volume profile & S/R overlay --- */
+.volume-profile { position: absolute; top: 0; left: 0; z-index: 3; }
+.vp-bar { fill: rgba(110, 160, 255, 0.28); }
+.vp-bar.va { fill: rgba(110, 160, 255, 0.45); }
+.vp-bar.poc { fill: rgba(255, 140, 0, 0.75); }
+.vp-poc-line { stroke: var(--accent-neutral); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.7; }
+.vp-sr-line { stroke: rgba(200, 200, 200, 0.35); stroke-width: 1; stroke-dasharray: 2 3; }
+.vp-label { fill: var(--text-dim); font-size: 9px; font-family: inherit; }
+.vp-sr-label { fill: var(--text-secondary); }
