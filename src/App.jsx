@@ -39,6 +39,7 @@ import StrategyBuilder from './components/StrategyBuilder.jsx';
 import BotPanel from './components/BotPanel.jsx';
 import BacktestPanel from './components/BacktestPanel.jsx';
 import MultiChartPanel from './components/MultiChartPanel.jsx';
+import CustomIndicatorPanel from './components/CustomIndicatorPanel.jsx';
 import ModelLabPanel from './components/ModelLabPanel.jsx';
 
 function Dashboard() {
@@ -169,6 +170,11 @@ function Dashboard() {
       <div className="dashboard-row row-2col">
         <OptimizerPanel />
         <DCFPanel />
+      </div>
+
+      {/* Row 8b: Custom indicator editor */}
+      <div className="dashboard-row row-2col">
+        <CustomIndicatorPanel />
       </div>
 
       {/* Row 9: Financials + Options */}
