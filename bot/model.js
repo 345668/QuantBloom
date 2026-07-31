@@ -15,6 +15,7 @@
 
 import { featuresAt, FEATURE_NAMES } from './features.js';
 import { predictProbaGBM } from './gbm.js';
+import { fitPCA, transformPCA, totalExplained } from './pca.js';
 
 const sigmoid = z => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))));
 
@@ -86,9 +87,36 @@ export function trainLogistic(X, y, opts = {}) {
  */
 export function predictProba(model, featureRow) {
   if (model.type === 'gbm') return predictProbaGBM(model, featureRow);
+  // PCA: project the row onto the latent factors, then apply the classifier
+  // trained on those factors (a logistic artifact) — recursion handles it.
+  if (model.type === 'pca') return predictProba(model.classifier, transformPCA(model.pca, featureRow));
   const s = model.scaler;
   const z = featureRow.reduce((acc, v, j) => acc + ((v - s.means[j]) / s.stds[j]) * model.weights[j], model.bias);
   return sigmoid(z);
+}
+
+/**
+ * Latent-factor model: reduce the features to k principal components (the
+ * "factors"), then predict the label from those components with logistic
+ * regression. The in-app stand-in for the ml4t-models latent-factor family.
+ */
+export function trainPCA(X, y, opts = {}) {
+  const { k = 5, featureNames = FEATURE_NAMES, epochs = 400, lr = 0.1, l2 = 0.01 } = opts;
+  if (!X.length || X.length !== y.length) return null;
+  const pca = fitPCA(X, k);
+  const scores = X.map(row => transformPCA(pca, row));
+  const factorNames = pca.components.map((_, i) => `PC${i + 1}`);
+  const classifier = trainLogistic(scores, y, { epochs, lr, l2, featureNames: factorNames });
+  if (!classifier) return null;
+  return {
+    type: 'pca',
+    pca, classifier,
+    k: pca.k,
+    explainedVariance: pca.explainedVariance,
+    totalExplained: totalExplained(pca),
+    featureNames,
+    trainedOn: X.length,
+  };
 }
 
 /** Classification metrics on a held-out set. */

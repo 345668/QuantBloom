@@ -93,7 +93,7 @@ export default function ModelLabPanel() {
           </div>
 
           <div className="ml-modeltype">
-            {[['gbm', 'Gradient boosting'], ['logistic', 'Logistic']].map(([k, label]) => (
+            {[['gbm', 'Gradient boosting'], ['logistic', 'Logistic'], ['pca', 'PCA factors']].map(([k, label]) => (
               <button key={k} className={`ml-mt-btn ${modelType === k ? 'active' : ''}`}
                 onClick={() => setModelType(k)}
                 title={k === 'gbm' ? 'Tree ensemble — captures non-linear feature interactions' : 'Linear baseline'}>
@@ -103,7 +103,7 @@ export default function ModelLabPanel() {
           </div>
 
           <button className="ml-train" onClick={train} disabled={busy}>
-            {busy ? 'Training…' : `Train ${modelType === 'gbm' ? 'gradient-boosting' : 'logistic'} model`}
+            {busy ? 'Training…' : `Train ${{ gbm: 'gradient-boosting', logistic: 'logistic', pca: 'PCA latent-factor' }[modelType]} model`}
           </button>
           <div className="ml-hint">
             19 point-in-time features · triple-barrier labels · temporal 70/30 split.
@@ -139,6 +139,19 @@ export default function ModelLabPanel() {
                       <span className="ml-imp-name">{f.name}</span>
                       <div className="ml-imp-track"><div className="ml-imp-fill" style={{ width: `${Math.min(f.importance * 100 * 2.5, 100)}%` }} /></div>
                       <span className="ml-imp-val">{(f.importance * 100).toFixed(0)}%</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {m.pcaVariance && (
+                <div className="ml-importance">
+                  <div className="ml-imp-title">Latent factors — variance explained ({(m.pcaVariance.total * 100).toFixed(0)}% total)</div>
+                  {m.pcaVariance.perComponent.map((v, i) => (
+                    <div key={i} className="ml-imp-row">
+                      <span className="ml-imp-name">PC{i + 1}</span>
+                      <div className="ml-imp-track"><div className="ml-imp-fill" style={{ width: `${Math.min(v * 100 * 1.5, 100)}%` }} /></div>
+                      <span className="ml-imp-val">{(v * 100).toFixed(0)}%</span>
                     </div>
                   ))}
                 </div>

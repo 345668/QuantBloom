@@ -10,12 +10,12 @@
 // ---------------------------------------------------------------------------
 
 import { buildDataset, temporalSplit } from './features.js';
-import { trainLogistic, evaluate, modelStrategy } from './model.js';
+import { trainLogistic, trainPCA, evaluate, modelStrategy } from './model.js';
 import { trainGBM, featureImportance } from './gbm.js';
 import { summarise, deflatedSharpe } from './statistics.js';
 import { loadStore, persist } from './persistence.js';
 
-export const MODEL_TYPES = ['logistic', 'gbm'];
+export const MODEL_TYPES = ['logistic', 'gbm', 'pca'];
 
 // Publish thresholds. Deliberately demanding — most strategies fail these, and
 // that is the correct outcome, not a bug to be tuned away.
@@ -141,6 +141,8 @@ export function trainAndRegister(candles, config = {}) {
         learningRate: config.learningRate || 0.08, minLeaf: config.minLeaf || 15,
         featureNames: dataset.featureNames,
       })
+    : modelType === 'pca'
+    ? trainPCA(split.train.X, split.train.y, { k: config.k || 5, featureNames: dataset.featureNames })
     : trainLogistic(split.train.X, split.train.y, { epochs, lr, l2, featureNames: dataset.featureNames });
   if (!model) return { ok: false, error: 'Training failed' };
 
@@ -160,6 +162,8 @@ export function trainAndRegister(candles, config = {}) {
     trainMetrics, testMetrics, backtest,
     // Tree models can say which inputs they used — half the value of a GBM.
     featureImportance: modelType === 'gbm' ? featureImportance(model).slice(0, 8) : null,
+    // PCA reports how much variance its latent factors capture.
+    pcaVariance: modelType === 'pca' ? { perComponent: model.explainedVariance, total: model.totalExplained } : null,
     eligible: gate.eligible,
     gateReasons: gate.reasons,
     published: false,

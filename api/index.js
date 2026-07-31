@@ -1734,6 +1734,85 @@ function featureImportance(model2) {
   return model2.featureNames.map((name, i) => ({ name, importance: +(imp[i] / total).toFixed(4) })).sort((a, b) => b.importance - a.importance);
 }
 
+// bot/eigen.js
+function jacobiEigen(matrix, { maxSweeps = 100, tol = 1e-12 } = {}) {
+  const n = matrix.length;
+  if (n === 1) return { values: [matrix[0][0]], vectors: [[1]] };
+  const a = matrix.map((r) => r.slice());
+  const v = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_2, j) => i === j ? 1 : 0));
+  for (let sweep = 0; sweep < maxSweeps; sweep++) {
+    let off = 0;
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) off += a[i][j] * a[i][j];
+    if (off < tol) break;
+    for (let p = 0; p < n; p++) {
+      for (let q = p + 1; q < n; q++) {
+        if (Math.abs(a[p][q]) < 1e-300) continue;
+        const app2 = a[p][p], aqq = a[q][q], apq = a[p][q];
+        const phi = 0.5 * Math.atan2(2 * apq, app2 - aqq);
+        const c = Math.cos(phi), s = Math.sin(phi);
+        for (let k = 0; k < n; k++) {
+          const akp = a[k][p], akq = a[k][q];
+          a[k][p] = c * akp + s * akq;
+          a[k][q] = -s * akp + c * akq;
+        }
+        for (let k = 0; k < n; k++) {
+          const apk = a[p][k], aqk = a[q][k];
+          a[p][k] = c * apk + s * aqk;
+          a[q][k] = -s * apk + c * aqk;
+        }
+        for (let k = 0; k < n; k++) {
+          const vkp = v[k][p], vkq = v[k][q];
+          v[k][p] = c * vkp + s * vkq;
+          v[k][q] = -s * vkp + c * vkq;
+        }
+      }
+    }
+  }
+  const values = a.map((r, i) => r[i]);
+  const order = values.map((_, i) => i).sort((x, y) => values[y] - values[x]);
+  return {
+    values: order.map((i) => values[i]),
+    // Column i of v is the eigenvector for the i-th eigenvalue.
+    vectors: order.map((i) => normalize(v.map((row) => row[i])))
+  };
+}
+function normalize(vec) {
+  const norm = Math.sqrt(vec.reduce((s, x) => s + x * x, 0)) || 1;
+  const lead = vec.find((x) => Math.abs(x) > 1e-9) || 1;
+  const sign = lead < 0 ? -1 : 1;
+  return vec.map((x) => x / norm * sign);
+}
+
+// bot/pca.js
+function fitPCA(X, k) {
+  const n = X.length, d = X[0].length;
+  const kk = Math.min(k, d);
+  const mean3 = new Array(d).fill(0), std = new Array(d).fill(0);
+  for (const row of X) for (let j = 0; j < d; j++) mean3[j] += row[j];
+  for (let j = 0; j < d; j++) mean3[j] /= n;
+  for (const row of X) for (let j = 0; j < d; j++) std[j] += (row[j] - mean3[j]) ** 2;
+  for (let j = 0; j < d; j++) std[j] = Math.sqrt(std[j] / n) || 1;
+  const Z = X.map((row) => row.map((v, j) => (v - mean3[j]) / std[j]));
+  const cols = Array.from({ length: d }, (_, j) => Z.map((r) => r[j]));
+  const cov = covariance(cols);
+  const { values, vectors } = jacobiEigen(cov);
+  const totalVar = values.reduce((s, v) => s + Math.max(v, 0), 0) || 1;
+  return {
+    mean: mean3,
+    std,
+    components: vectors.slice(0, kk),
+    explainedVariance: values.slice(0, kk).map((v) => +(Math.max(v, 0) / totalVar).toFixed(4)),
+    k: kk
+  };
+}
+function transformPCA(pca, row) {
+  const z = row.map((v, j) => (v - pca.mean[j]) / pca.std[j]);
+  return pca.components.map((comp) => comp.reduce((s, w, j) => s + w * z[j], 0));
+}
+function totalExplained(pca) {
+  return +pca.explainedVariance.reduce((a, b) => a + b, 0).toFixed(4);
+}
+
 // bot/model.js
 var sigmoid2 = (z) => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))));
 function fitScaler(X) {
@@ -1784,9 +1863,29 @@ function trainLogistic(X, y, opts = {}) {
 }
 function predictProba(model2, featureRow) {
   if (model2.type === "gbm") return predictProbaGBM(model2, featureRow);
+  if (model2.type === "pca") return predictProba(model2.classifier, transformPCA(model2.pca, featureRow));
   const s = model2.scaler;
   const z = featureRow.reduce((acc, v, j) => acc + (v - s.means[j]) / s.stds[j] * model2.weights[j], model2.bias);
   return sigmoid2(z);
+}
+function trainPCA(X, y, opts = {}) {
+  const { k = 5, featureNames = FEATURE_NAMES, epochs = 400, lr = 0.1, l2 = 0.01 } = opts;
+  if (!X.length || X.length !== y.length) return null;
+  const pca = fitPCA(X, k);
+  const scores = X.map((row) => transformPCA(pca, row));
+  const factorNames = pca.components.map((_, i) => `PC${i + 1}`);
+  const classifier = trainLogistic(scores, y, { epochs, lr, l2, featureNames: factorNames });
+  if (!classifier) return null;
+  return {
+    type: "pca",
+    pca,
+    classifier,
+    k: pca.k,
+    explainedVariance: pca.explainedVariance,
+    totalExplained: totalExplained(pca),
+    featureNames,
+    trainedOn: X.length
+  };
 }
 function evaluate(model2, X, y) {
   if (!X.length) return null;
@@ -2046,7 +2145,7 @@ function persist(store) {
 }
 
 // bot/model-registry.js
-var MODEL_TYPES = ["logistic", "gbm"];
+var MODEL_TYPES = ["logistic", "gbm", "pca"];
 var PUBLISH_GATE = {
   minTestAuc: 0.55,
   // better than a coin flip at telling up from down
@@ -2159,7 +2258,7 @@ function trainAndRegister(candles, config = {}) {
     learningRate: config.learningRate || 0.08,
     minLeaf: config.minLeaf || 15,
     featureNames: dataset.featureNames
-  }) : trainLogistic(split.train.X, split.train.y, { epochs, lr, l2, featureNames: dataset.featureNames });
+  }) : modelType === "pca" ? trainPCA(split.train.X, split.train.y, { k: config.k || 5, featureNames: dataset.featureNames }) : trainLogistic(split.train.X, split.train.y, { epochs, lr, l2, featureNames: dataset.featureNames });
   if (!model2) return { ok: false, error: "Training failed" };
   const trainMetrics = evaluate(model2, split.train.X, split.train.y);
   const testMetrics = evaluate(model2, split.test.X, split.test.y);
@@ -2179,6 +2278,8 @@ function trainAndRegister(candles, config = {}) {
     backtest,
     // Tree models can say which inputs they used — half the value of a GBM.
     featureImportance: modelType === "gbm" ? featureImportance(model2).slice(0, 8) : null,
+    // PCA reports how much variance its latent factors capture.
+    pcaVariance: modelType === "pca" ? { perComponent: model2.explainedVariance, total: model2.totalExplained } : null,
     eligible: gate.eligible,
     gateReasons: gate.reasons,
     published: false
