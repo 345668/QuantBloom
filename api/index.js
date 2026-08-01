@@ -2349,6 +2349,26 @@ function unpublish(modelId) {
   return { ok: true };
 }
 
+// bot/brackets.js
+function roundTick(price) {
+  return price >= 1 ? +price.toFixed(2) : +price.toFixed(4);
+}
+function computeBracket(entry, slPercent, tpPercent) {
+  if (!(entry > 0)) return { stopLoss: null, takeProfit: null, valid: false, reason: "Invalid entry price" };
+  let stopLoss = null, takeProfit = null;
+  if (slPercent != null) {
+    if (!(slPercent > 0 && slPercent < 1)) return { stopLoss: null, takeProfit: null, valid: false, reason: "Stop % must be between 0 and 1" };
+    stopLoss = roundTick(entry * (1 - slPercent));
+  }
+  if (tpPercent != null) {
+    if (!(tpPercent > 0)) return { stopLoss: null, takeProfit: null, valid: false, reason: "Target % must be positive" };
+    takeProfit = roundTick(entry * (1 + tpPercent));
+  }
+  if (stopLoss != null && stopLoss >= entry) return { stopLoss, takeProfit, valid: false, reason: "Stop rounds to at or above entry" };
+  if (takeProfit != null && takeProfit <= entry) return { stopLoss, takeProfit, valid: false, reason: "Target rounds to at or below entry" };
+  return { stopLoss, takeProfit, valid: stopLoss != null || takeProfit != null, reason: null };
+}
+
 // bot/alpaca.js
 var endpoint = () => process.env.ALPACA_ENDPOINT || "https://paper-api.alpaca.markets/v2";
 var key2 = () => process.env.ALPACA_API_KEY;
@@ -2450,6 +2470,40 @@ async function submitOrder({ symbol, side, qty, type = "market", timeInForce = "
     submittedAt: o.submitted_at
   };
 }
+async function submitBracketOrder({ symbol, side, qty, stopLoss, takeProfit, timeInForce = "gtc", clientOrderId }) {
+  const body = {
+    symbol,
+    side,
+    qty: String(qty),
+    type: "market",
+    time_in_force: timeInForce,
+    ...clientOrderId ? { client_order_id: clientOrderId } : {}
+  };
+  if (stopLoss != null && takeProfit != null) {
+    body.order_class = "bracket";
+    body.stop_loss = { stop_price: String(stopLoss) };
+    body.take_profit = { limit_price: String(takeProfit) };
+  } else if (stopLoss != null) {
+    body.order_class = "oto";
+    body.stop_loss = { stop_price: String(stopLoss) };
+  } else if (takeProfit != null) {
+    body.order_class = "oto";
+    body.take_profit = { limit_price: String(takeProfit) };
+  }
+  const o = await alpaca("/orders", { method: "POST", body: JSON.stringify(body) });
+  return {
+    id: o.id,
+    clientOrderId: o.client_order_id,
+    symbol: o.symbol,
+    side: o.side,
+    qty: parseFloat(o.qty),
+    type: o.type,
+    orderClass: o.order_class,
+    status: o.status,
+    submittedAt: o.submitted_at,
+    legs: (o.legs || []).length
+  };
+}
 async function cancelAllOrders() {
   try {
     const r = await alpaca("/orders", { method: "DELETE" });
@@ -2488,6 +2542,9 @@ var state = {
   // trained ML model from the Model Lab drives every decision instead.
   activeModelId: null,
   useLlm: true,
+  // Protective exits attached to each entry (null = off). slPercent 0.05 = a 5%
+  // stop; tpPercent 0.10 = a 10% target. Managed broker-side as a bracket.
+  brackets: { enabled: false, slPercent: 0.05, tpPercent: 0.1 },
   limits: { ...DEFAULT_LIMITS },
   ordersToday: 0,
   ordersDate: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
@@ -2552,6 +2609,38 @@ function setActiveModel(modelId) {
   audit("model_selected", { modelId, type: m.modelType, symbol: m.symbol, eligible: m.eligible });
   return { ok: true, activeModelId: modelId, eligible: m.eligible };
 }
+async function autoTrain({ fetchCandles, modelType = "gbm" } = {}) {
+  if (!fetchCandles) return { ok: false, error: "No candle source" };
+  const trained2 = [];
+  for (const symbol of state.watchlist) {
+    try {
+      const candles = await fetchCandles(symbol).catch(() => null);
+      if (!candles || candles.length < 300) {
+        trained2.push({ symbol, ok: false, error: "insufficient history" });
+        continue;
+      }
+      const out = trainAndRegister(candles, { symbol, modelType, range: "5y" });
+      if (!out.ok) {
+        trained2.push({ symbol, ok: false, error: out.error });
+        continue;
+      }
+      const m = out.model;
+      trained2.push({ symbol, ok: true, id: m.id, auc: m.testMetrics?.auc ?? null, eligible: m.eligible });
+    } catch (e) {
+      trained2.push({ symbol, ok: false, error: e.message });
+    }
+  }
+  const candidates = trained2.filter((t) => t.ok && t.auc != null);
+  if (!candidates.length) {
+    audit("autotrain", { trained: trained2.length, selected: null });
+    return { ok: true, trained: trained2, selected: null };
+  }
+  candidates.sort((a, b) => Number(b.eligible) - Number(a.eligible) || b.auc - a.auc);
+  const best = candidates[0];
+  setActiveModel(best.id);
+  audit("autotrain", { trained: trained2.length, selected: best.symbol, auc: best.auc, eligible: best.eligible });
+  return { ok: true, trained: trained2, selected: best };
+}
 function setEnabled(enabled, who = "user") {
   if (enabled && state.halted && state.requiresManualRestart) {
     return { ok: false, error: `Cannot enable: ${state.haltReason}. Reset the halt first.` };
@@ -2570,6 +2659,18 @@ function resetHalt(who = "user") {
 function updateConfig(patch = {}) {
   if (Array.isArray(patch.watchlist)) {
     state.watchlist = patch.watchlist.map((s) => String(s).toUpperCase()).slice(0, 20);
+  }
+  if (patch.brackets && typeof patch.brackets === "object") {
+    const b = patch.brackets;
+    if (typeof b.enabled === "boolean") state.brackets.enabled = b.enabled;
+    if (b.slPercent != null) {
+      const n = Number(b.slPercent);
+      if (Number.isFinite(n) && n > 0 && n <= 0.5) state.brackets.slPercent = n;
+    }
+    if (b.tpPercent != null) {
+      const n = Number(b.tpPercent);
+      if (Number.isFinite(n) && n > 0 && n <= 2) state.brackets.tpPercent = n;
+    }
   }
   if (patch.preset && PRESETS[patch.preset]) {
     const p = PRESETS[patch.preset];
@@ -2719,10 +2820,22 @@ async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = fals
       } else if (decision.action === "SELL" && held?.qty > 0) {
         order = { symbol, side: "sell", qty: held.qty, price };
       }
+      let bracket = null;
+      if (order && order.side === "buy" && state.brackets.enabled) {
+        const b = computeBracket(price, state.brackets.slPercent, state.brackets.tpPercent);
+        if (b.valid) bracket = b;
+      }
       if (order) {
         gate = evaluateOrder(order, riskState, state.limits);
         if (gate.approved && !dryRun) {
-          submitted = await submitOrder({
+          submitted = bracket ? await submitBracketOrder({
+            symbol,
+            side: order.side,
+            qty: gate.adjustedQty,
+            stopLoss: bracket.stopLoss,
+            takeProfit: bracket.takeProfit,
+            clientOrderId: `qb-${symbol}-${Date.now()}`
+          }) : await submitOrder({
             symbol,
             side: order.side,
             qty: gate.adjustedQty,
@@ -2730,7 +2843,7 @@ async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = fals
           });
           state.ordersToday++;
           riskState.ordersToday = state.ordersToday;
-          audit("order_submitted", { symbol, side: order.side, qty: gate.adjustedQty, id: submitted.id });
+          audit("order_submitted", { symbol, side: order.side, qty: gate.adjustedQty, id: submitted.id, bracket: bracket ? { sl: bracket.stopLoss, tp: bracket.takeProfit } : null });
         }
       }
       const record = {
@@ -2748,6 +2861,7 @@ async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = fals
         order,
         gate,
         submitted,
+        bracket,
         dryRun
       };
       results.push(record);
@@ -5373,6 +5487,17 @@ app.post("/api/v1/bot/config", (req, res) => {
 app.post("/api/v1/bot/model", (req, res) => {
   const result = setActiveModel(req.body?.modelId || null);
   res.status(result.ok ? 200 : 404).json({ ...result, state: getState() });
+});
+app.post("/api/v1/bot/autotrain", async (req, res) => {
+  try {
+    const result = await autoTrain({
+      fetchCandles: (symbol) => yahooCandles(symbol, "1d", "5y").catch(() => null),
+      modelType: req.body?.modelType || "gbm"
+    });
+    res.json({ ...result, state: getState() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 app.post("/api/v1/bot/reset-halt", (req, res) => {
   res.json({ ...resetHalt(), state: getState() });

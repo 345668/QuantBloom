@@ -2792,6 +2792,20 @@ app.post('/api/v1/bot/model', (req, res) => {
   res.status(result.ok ? 200 : 404).json({ ...result, state: bot.getState() });
 });
 
+// Auto-train: the bot trains a model per watchlist symbol and selects the best.
+// Training needs a long history, so fetch 5y here (not the 1y live path).
+app.post('/api/v1/bot/autotrain', async (req, res) => {
+  try {
+    const result = await bot.autoTrain({
+      fetchCandles: (symbol) => yahooCandles(symbol, '1d', '5y').catch(() => null),
+      modelType: req.body?.modelType || 'gbm',
+    });
+    res.json({ ...result, state: bot.getState() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/v1/bot/reset-halt', (req, res) => {
   res.json({ ...bot.resetHalt(), state: bot.getState() });
 });

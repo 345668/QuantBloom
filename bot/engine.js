@@ -9,7 +9,8 @@ import { evaluateOrder, checkHaltConditions, DEFAULT_LIMITS } from './risk-gate.
 import { ensemble, sizePosition, STRATEGIES, PRESETS, describeStrategies, describePresets } from './strategies.js';
 import { reviewDecision, applyReview, mistralConfigured, getBudget } from './mistral.js';
 import { modelStrategy } from './model.js';
-import { getModel, listTrained } from './model-registry.js';
+import { getModel, listTrained, trainAndRegister } from './model-registry.js';
+import { computeBracket } from './brackets.js';
 import * as broker from './alpaca.js';
 
 const state = {
@@ -26,6 +27,9 @@ const state = {
   // trained ML model from the Model Lab drives every decision instead.
   activeModelId: null,
   useLlm: true,
+  // Protective exits attached to each entry (null = off). slPercent 0.05 = a 5%
+  // stop; tpPercent 0.10 = a 10% target. Managed broker-side as a bracket.
+  brackets: { enabled: false, slPercent: 0.05, tpPercent: 0.10 },
   limits: { ...DEFAULT_LIMITS },
   ordersToday: 0,
   ordersDate: new Date().toISOString().slice(0, 10),
@@ -101,6 +105,39 @@ export function setActiveModel(modelId) {
   return { ok: true, activeModelId: modelId, eligible: m.eligible };
 }
 
+/**
+ * "Train itself": train a model on every watchlist symbol, then auto-select the
+ * strongest — preferring one that clears the publish gate, otherwise the best
+ * out-of-sample AUC. This is how the bot refreshes its own model; a scheduler
+ * or the UI can call it. Honest by construction: it still only promotes what
+ * the gate/metrics justify, and reports when nothing is worth using.
+ */
+export async function autoTrain({ fetchCandles, modelType = 'gbm' } = {}) {
+  if (!fetchCandles) return { ok: false, error: 'No candle source' };
+  const trained = [];
+  for (const symbol of state.watchlist) {
+    try {
+      const candles = await fetchCandles(symbol).catch(() => null);
+      if (!candles || candles.length < 300) { trained.push({ symbol, ok: false, error: 'insufficient history' }); continue; }
+      const out = trainAndRegister(candles, { symbol, modelType, range: '5y' });
+      if (!out.ok) { trained.push({ symbol, ok: false, error: out.error }); continue; }
+      const m = out.model;
+      trained.push({ symbol, ok: true, id: m.id, auc: m.testMetrics?.auc ?? null, eligible: m.eligible });
+    } catch (e) {
+      trained.push({ symbol, ok: false, error: e.message });
+    }
+  }
+
+  const candidates = trained.filter(t => t.ok && t.auc != null);
+  if (!candidates.length) { audit('autotrain', { trained: trained.length, selected: null }); return { ok: true, trained, selected: null }; }
+  // Prefer an eligible model; among ties, the highest AUC.
+  candidates.sort((a, b) => (Number(b.eligible) - Number(a.eligible)) || (b.auc - a.auc));
+  const best = candidates[0];
+  setActiveModel(best.id);
+  audit('autotrain', { trained: trained.length, selected: best.symbol, auc: best.auc, eligible: best.eligible });
+  return { ok: true, trained, selected: best };
+}
+
 export function setEnabled(enabled, who = 'user') {
   // A drawdown halt cannot be cleared by flipping the switch — that would
   // defeat the purpose of requiring a deliberate restart.
@@ -123,6 +160,19 @@ export function resetHalt(who = 'user') {
 export function updateConfig(patch = {}) {
   if (Array.isArray(patch.watchlist)) {
     state.watchlist = patch.watchlist.map(s => String(s).toUpperCase()).slice(0, 20);
+  }
+  if (patch.brackets && typeof patch.brackets === 'object') {
+    const b = patch.brackets;
+    if (typeof b.enabled === 'boolean') state.brackets.enabled = b.enabled;
+    // Percentages are capped so a fat-finger can't set a 90% "stop".
+    if (b.slPercent != null) {
+      const n = Number(b.slPercent);
+      if (Number.isFinite(n) && n > 0 && n <= 0.5) state.brackets.slPercent = n;
+    }
+    if (b.tpPercent != null) {
+      const n = Number(b.tpPercent);
+      if (Number.isFinite(n) && n > 0 && n <= 2) state.brackets.tpPercent = n;
+    }
   }
   // A preset sets both the strategy set and the agreement threshold; an
   // explicit strategies/threshold patch afterwards marks the config custom.
@@ -284,16 +334,29 @@ export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun
         order = { symbol, side: 'sell', qty: held.qty, price };
       }
 
+      // Attach protective exits to a new long entry when brackets are enabled.
+      let bracket = null;
+      if (order && order.side === 'buy' && state.brackets.enabled) {
+        const b = computeBracket(price, state.brackets.slPercent, state.brackets.tpPercent);
+        if (b.valid) bracket = b;
+      }
+
       if (order) {
         gate = evaluateOrder(order, riskState, state.limits);
         if (gate.approved && !dryRun) {
-          submitted = await broker.submitOrder({
-            symbol, side: order.side, qty: gate.adjustedQty,
-            clientOrderId: `qb-${symbol}-${Date.now()}`,
-          });
+          submitted = bracket
+            ? await broker.submitBracketOrder({
+                symbol, side: order.side, qty: gate.adjustedQty,
+                stopLoss: bracket.stopLoss, takeProfit: bracket.takeProfit,
+                clientOrderId: `qb-${symbol}-${Date.now()}`,
+              })
+            : await broker.submitOrder({
+                symbol, side: order.side, qty: gate.adjustedQty,
+                clientOrderId: `qb-${symbol}-${Date.now()}`,
+              });
           state.ordersToday++;
           riskState.ordersToday = state.ordersToday;
-          audit('order_submitted', { symbol, side: order.side, qty: gate.adjustedQty, id: submitted.id });
+          audit('order_submitted', { symbol, side: order.side, qty: gate.adjustedQty, id: submitted.id, bracket: bracket ? { sl: bracket.stopLoss, tp: bracket.takeProfit } : null });
         }
       }
 
@@ -304,7 +367,7 @@ export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun
         signals: decision.signals, llm: decision.llm || null,
         model: decision.model || null,
         vetoed: decision.vetoed || false, damped: decision.damped || false,
-        order, gate, submitted, dryRun,
+        order, gate, submitted, bracket, dryRun,
       };
       results.push(record);
       decisions.unshift(record);
