@@ -1005,6 +1005,16 @@ function macdStrategy(ta) {
   if (m.histogram < 0) return { action: "SELL", confidence: strength, rationale: `MACD histogram ${m.histogram}` };
   return { action: "HOLD", confidence: 0, rationale: "MACD flat" };
 }
+function contrarianStrategy(ta) {
+  const price = ta?.price;
+  const ema2 = ta?.movingAverages?.ema12;
+  if (!price || ema2 == null) return null;
+  const mom = price / ema2 - 1;
+  const strength = clamp01(Math.abs(mom) / 0.02);
+  if (mom > 0) return { action: "SELL", confidence: strength, rationale: `Fading +${(mom * 100).toFixed(2)}% short-term move` };
+  if (mom < 0) return { action: "BUY", confidence: strength, rationale: `Fading ${(mom * 100).toFixed(2)}% short-term move` };
+  return { action: "HOLD", confidence: 0, rationale: "No short-term move to fade" };
+}
 function trendStrategy(ta) {
   const ma = ta?.movingAverages;
   const price = ta?.price;
@@ -1069,6 +1079,15 @@ var STRATEGIES = {
     worksWhen: "Stable volatility",
     failsWhen: "Volatility expansion \u2014 fades a breakout"
   },
+  contrarian: {
+    name: "Contrarian",
+    fn: contrarianStrategy,
+    weight: 1,
+    family: "Mean reversion",
+    description: "Fades the latest short-term move (position = -sign of recent momentum).",
+    worksWhen: "Choppy, mean-reverting intraday markets",
+    failsWhen: "Strong trends \u2014 fights the move"
+  },
   consensus: {
     name: "Indicator Consensus",
     fn: consensusStrategy,
@@ -1106,8 +1125,8 @@ var PRESETS = {
   },
   reversionOnly: {
     name: "Reversion only",
-    description: "RSI and Bollinger. Suited to range-bound markets.",
-    strategies: ["rsi", "bollinger"],
+    description: "RSI, Bollinger and contrarian. Suited to range-bound markets.",
+    strategies: ["rsi", "bollinger", "contrarian"],
     threshold: 0.2
   }
 };

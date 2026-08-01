@@ -40,6 +40,7 @@ import BotPanel from './components/BotPanel.jsx';
 import BacktestPanel from './components/BacktestPanel.jsx';
 import MultiChartPanel from './components/MultiChartPanel.jsx';
 import CustomIndicatorPanel from './components/CustomIndicatorPanel.jsx';
+import TVMPanel from './components/TVMPanel.jsx';
 import ModelLabPanel from './components/ModelLabPanel.jsx';
 
 function Dashboard() {
@@ -167,9 +168,10 @@ function Dashboard() {
       </div>
 
       {/* Row 8: Attribution + Optimiser + DCF */}
-      <div className="dashboard-row row-2col">
+      <div className="dashboard-row row-3col">
         <OptimizerPanel />
         <DCFPanel />
+        <TVMPanel />
       </div>
 
       {/* Row 8b: Custom indicator editor */}

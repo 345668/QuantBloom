@@ -33,6 +33,24 @@ export function macdStrategy(ta) {
   return { action: 'HOLD', confidence: 0, rationale: 'MACD flat' };
 }
 
+/**
+ * Contrarian / short-term mean reversion — the default strategy in the course
+ * trader bots (position = -sign(mean(recent returns))). It fades the latest
+ * move: if price has run above its short EMA it sells, and vice versa. Uses the
+ * 12-period EMA as the momentum reference since the signal payload carries EMAs
+ * rather than raw returns.
+ */
+export function contrarianStrategy(ta) {
+  const price = ta?.price;
+  const ema = ta?.movingAverages?.ema12;
+  if (!price || ema == null) return null;
+  const mom = price / ema - 1;
+  const strength = clamp01(Math.abs(mom) / 0.02);
+  if (mom > 0) return { action: 'SELL', confidence: strength, rationale: `Fading +${(mom * 100).toFixed(2)}% short-term move` };
+  if (mom < 0) return { action: 'BUY', confidence: strength, rationale: `Fading ${(mom * 100).toFixed(2)}% short-term move` };
+  return { action: 'HOLD', confidence: 0, rationale: 'No short-term move to fade' };
+}
+
 /** Trend following on the 50/200 relationship plus price location. */
 export function trendStrategy(ta) {
   const ma = ta?.movingAverages;
@@ -91,6 +109,12 @@ export const STRATEGIES = {
     description: 'Fades moves outside the 20/2 bands.',
     worksWhen: 'Stable volatility', failsWhen: 'Volatility expansion — fades a breakout',
   },
+  contrarian: {
+    name: 'Contrarian', fn: contrarianStrategy, weight: 1,
+    family: 'Mean reversion',
+    description: 'Fades the latest short-term move (position = -sign of recent momentum).',
+    worksWhen: 'Choppy, mean-reverting intraday markets', failsWhen: 'Strong trends — fights the move',
+  },
   consensus: {
     name: 'Indicator Consensus', fn: consensusStrategy, weight: 2,
     family: 'Ensemble',
@@ -133,8 +157,8 @@ export const PRESETS = {
   },
   reversionOnly: {
     name: 'Reversion only',
-    description: 'RSI and Bollinger. Suited to range-bound markets.',
-    strategies: ['rsi', 'bollinger'],
+    description: 'RSI, Bollinger and contrarian. Suited to range-bound markets.',
+    strategies: ['rsi', 'bollinger', 'contrarian'],
     threshold: 0.2,
   },
 };
