@@ -57,3 +57,17 @@ export function trailingStop(highWaterMark, trailPercent) {
   if (!(highWaterMark > 0) || !(trailPercent > 0 && trailPercent < 1)) return null;
   return roundTick(highWaterMark * (1 - trailPercent));
 }
+
+/**
+ * One step of a live trailing stop for a long position. Given the previous
+ * high-water mark and the current price, ratchet the mark up, recompute the
+ * stop, and report whether price has fallen through it (an exit).
+ *
+ * @returns {{ hwm, stop, breached }}
+ */
+export function updateTrailingStop(prevHwm, price, trailPercent) {
+  if (!(price > 0)) return { hwm: prevHwm ?? null, stop: null, breached: false };
+  const hwm = Math.max(prevHwm ?? price, price);
+  const stop = trailingStop(hwm, trailPercent);
+  return { hwm, stop, breached: stop != null && price <= stop };
+}

@@ -1883,6 +1883,10 @@ function trainLogistic(X, y, opts = {}) {
 function predictProba(model2, featureRow) {
   if (model2.type === "gbm") return predictProbaGBM(model2, featureRow);
   if (model2.type === "pca") return predictProba(model2.classifier, transformPCA(model2.pca, featureRow));
+  if (model2.type === "ensemble") {
+    const ps = model2.members.map((mem) => predictProba(mem, featureRow));
+    return ps.reduce((a, b) => a + b, 0) / ps.length;
+  }
   const s = model2.scaler;
   const z = featureRow.reduce((acc, v, j) => acc + (v - s.means[j]) / s.stds[j] * model2.weights[j], model2.bias);
   return sigmoid2(z);
@@ -1905,6 +1909,17 @@ function trainPCA(X, y, opts = {}) {
     featureNames,
     trainedOn: X.length
   };
+}
+function trainEnsemble(X, y, opts = {}) {
+  const { featureNames = FEATURE_NAMES, k = 5 } = opts;
+  if (!X.length || X.length !== y.length) return null;
+  const members = [
+    trainGBM(X, y, { nEstimators: 80, maxDepth: 3, learningRate: 0.08, minLeaf: 15, featureNames }),
+    trainLogistic(X, y, { epochs: 400, featureNames }),
+    trainPCA(X, y, { k, featureNames })
+  ].filter(Boolean);
+  if (members.length < 2) return null;
+  return { type: "ensemble", members, memberTypes: members.map((m) => m.type), featureNames, trainedOn: X.length };
 }
 function evaluate(model2, X, y) {
   if (!X.length) return null;
@@ -2164,7 +2179,7 @@ function persist(store) {
 }
 
 // bot/model-registry.js
-var MODEL_TYPES = ["logistic", "gbm", "pca"];
+var MODEL_TYPES = ["logistic", "gbm", "pca", "ensemble"];
 var PUBLISH_GATE = {
   minTestAuc: 0.55,
   // better than a coin flip at telling up from down
@@ -2277,7 +2292,7 @@ function trainAndRegister(candles, config = {}) {
     learningRate: config.learningRate || 0.08,
     minLeaf: config.minLeaf || 15,
     featureNames: dataset.featureNames
-  }) : modelType === "pca" ? trainPCA(split.train.X, split.train.y, { k: config.k || 5, featureNames: dataset.featureNames }) : trainLogistic(split.train.X, split.train.y, { epochs, lr, l2, featureNames: dataset.featureNames });
+  }) : modelType === "pca" ? trainPCA(split.train.X, split.train.y, { k: config.k || 5, featureNames: dataset.featureNames }) : modelType === "ensemble" ? trainEnsemble(split.train.X, split.train.y, { k: config.k || 5, featureNames: dataset.featureNames }) : trainLogistic(split.train.X, split.train.y, { epochs, lr, l2, featureNames: dataset.featureNames });
   if (!model2) return { ok: false, error: "Training failed" };
   const trainMetrics = evaluate(model2, split.train.X, split.train.y);
   const testMetrics = evaluate(model2, split.test.X, split.test.y);
@@ -2367,6 +2382,16 @@ function computeBracket(entry, slPercent, tpPercent) {
   if (stopLoss != null && stopLoss >= entry) return { stopLoss, takeProfit, valid: false, reason: "Stop rounds to at or above entry" };
   if (takeProfit != null && takeProfit <= entry) return { stopLoss, takeProfit, valid: false, reason: "Target rounds to at or below entry" };
   return { stopLoss, takeProfit, valid: stopLoss != null || takeProfit != null, reason: null };
+}
+function trailingStop(highWaterMark, trailPercent) {
+  if (!(highWaterMark > 0) || !(trailPercent > 0 && trailPercent < 1)) return null;
+  return roundTick(highWaterMark * (1 - trailPercent));
+}
+function updateTrailingStop(prevHwm, price, trailPercent) {
+  if (!(price > 0)) return { hwm: prevHwm ?? null, stop: null, breached: false };
+  const hwm = Math.max(prevHwm ?? price, price);
+  const stop = trailingStop(hwm, trailPercent);
+  return { hwm, stop, breached: stop != null && price <= stop };
 }
 
 // bot/alpaca.js
@@ -2544,7 +2569,9 @@ var state = {
   useLlm: true,
   // Protective exits attached to each entry (null = off). slPercent 0.05 = a 5%
   // stop; tpPercent 0.10 = a 10% target. Managed broker-side as a bracket.
-  brackets: { enabled: false, slPercent: 0.05, tpPercent: 0.1 },
+  brackets: { enabled: false, slPercent: 0.05, tpPercent: 0.1, trailPercent: 0 },
+  // Per-symbol high-water mark for the live trailing stop (peak since entry).
+  highWaterMarks: {},
   limits: { ...DEFAULT_LIMITS },
   ordersToday: 0,
   ordersDate: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
@@ -2670,6 +2697,10 @@ function updateConfig(patch = {}) {
     if (b.tpPercent != null) {
       const n = Number(b.tpPercent);
       if (Number.isFinite(n) && n > 0 && n <= 2) state.brackets.tpPercent = n;
+    }
+    if (b.trailPercent != null) {
+      const n = Number(b.trailPercent);
+      if (Number.isFinite(n) && n >= 0 && n <= 0.5) state.brackets.trailPercent = n;
     }
   }
   if (patch.preset && PRESETS[patch.preset]) {
@@ -2813,6 +2844,25 @@ async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = fals
       }
       const price = technical.price;
       const held = posBySymbol[symbol];
+      let trailing = null;
+      if (state.brackets.enabled && state.brackets.trailPercent > 0 && held?.qty > 0) {
+        const t = updateTrailingStop(state.highWaterMarks[symbol], price, state.brackets.trailPercent);
+        state.highWaterMarks[symbol] = t.hwm;
+        trailing = { hwm: t.hwm, stop: t.stop, breached: t.breached };
+        if (t.breached) {
+          decision = {
+            action: "SELL",
+            confidence: 1,
+            agreement: "trailing stop",
+            rationale: `Trailing stop hit at ${t.stop} (peak ${t.hwm}, ${(state.brackets.trailPercent * 100).toFixed(1)}% trail)`,
+            signals: [],
+            trailingExit: true,
+            llm: null
+          };
+        }
+      } else if (!held || held.qty <= 0) {
+        delete state.highWaterMarks[symbol];
+      }
       let order = null, gate = null, submitted = null;
       if (decision.action === "BUY") {
         const qty = sizePosition(decision, account.equity, price, state.limits.maxPositionPercent);
@@ -2858,6 +2908,8 @@ async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = fals
         model: decision.model || null,
         vetoed: decision.vetoed || false,
         damped: decision.damped || false,
+        trailingExit: decision.trailingExit || false,
+        trailing,
         order,
         gate,
         submitted,

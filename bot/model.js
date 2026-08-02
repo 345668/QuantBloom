@@ -14,7 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import { featuresAt, FEATURE_NAMES } from './features.js';
-import { predictProbaGBM } from './gbm.js';
+import { predictProbaGBM, trainGBM } from './gbm.js';
 import { fitPCA, transformPCA, totalExplained } from './pca.js';
 
 const sigmoid = z => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))));
@@ -90,6 +90,11 @@ export function predictProba(model, featureRow) {
   // PCA: project the row onto the latent factors, then apply the classifier
   // trained on those factors (a logistic artifact) — recursion handles it.
   if (model.type === 'pca') return predictProba(model.classifier, transformPCA(model.pca, featureRow));
+  // Ensemble: average the member probabilities (recursion dispatches each).
+  if (model.type === 'ensemble') {
+    const ps = model.members.map(mem => predictProba(mem, featureRow));
+    return ps.reduce((a, b) => a + b, 0) / ps.length;
+  }
   const s = model.scaler;
   const z = featureRow.reduce((acc, v, j) => acc + ((v - s.means[j]) / s.stds[j]) * model.weights[j], model.bias);
   return sigmoid(z);
@@ -117,6 +122,26 @@ export function trainPCA(X, y, opts = {}) {
     featureNames,
     trainedOn: X.length,
   };
+}
+
+/**
+ * Ensemble: train GBM, logistic and PCA members and average their predicted
+ * probabilities. Blending decorrelated errors is a standard way to trade a bit
+ * of each model's bias for lower variance — it usually lands near the best
+ * member and is more robust across regimes. It is not a magic edge: on the same
+ * features it can only recombine what those features already contain, and the
+ * publish gate judges it on the same out-of-sample bar as everything else.
+ */
+export function trainEnsemble(X, y, opts = {}) {
+  const { featureNames = FEATURE_NAMES, k = 5 } = opts;
+  if (!X.length || X.length !== y.length) return null;
+  const members = [
+    trainGBM(X, y, { nEstimators: 80, maxDepth: 3, learningRate: 0.08, minLeaf: 15, featureNames }),
+    trainLogistic(X, y, { epochs: 400, featureNames }),
+    trainPCA(X, y, { k, featureNames }),
+  ].filter(Boolean);
+  if (members.length < 2) return null;
+  return { type: 'ensemble', members, memberTypes: members.map(m => m.type), featureNames, trainedOn: X.length };
 }
 
 /** Classification metrics on a held-out set. */

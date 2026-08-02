@@ -198,6 +198,11 @@ export default function BotPanel() {
               <input type="number" step="1" defaultValue={Math.round((data.brackets.tpPercent || 0.10) * 100)}
                 onBlur={e => act('brackets', () => post('/api/v1/bot/config', { brackets: { tpPercent: (Number(e.target.value) || 10) / 100 } }))} />
             </label>
+            <label>Trail%
+              <input type="number" step="1" defaultValue={Math.round((data.brackets.trailPercent || 0) * 100)}
+                title="0 = off; a live trailing stop that ratchets up with the peak"
+                onBlur={e => act('brackets', () => post('/api/v1/bot/config', { brackets: { trailPercent: (Number(e.target.value) || 0) / 100 } }))} />
+            </label>
             <span className="bot-bracket-rr">
               R:R {((data.brackets.tpPercent || 0) / (data.brackets.slPercent || 1)).toFixed(1)}
             </span>

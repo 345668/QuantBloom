@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { roundTick, computeBracket, bracketRR, trailingStop } from '../bot/brackets.js';
+import { roundTick, computeBracket, bracketRR, trailingStop, updateTrailingStop } from '../bot/brackets.js';
 
 const close = (a, b, tol = 1e-9) => assert.ok(Math.abs(a - b) <= tol, `${a} vs ${b}`);
 
@@ -52,4 +52,28 @@ test('trailingStop sits below the high-water mark and ratchets with it', () => {
   assert.equal(trailingStop(120, 0.05), 114); // moved up with a new high
   assert.equal(trailingStop(0, 0.05), null);
   assert.equal(trailingStop(100, 0), null);
+});
+
+test('updateTrailingStop ratchets the mark up and never breaches while rising', () => {
+  let s = updateTrailingStop(null, 100, 0.05);
+  assert.equal(s.hwm, 100); assert.equal(s.stop, 95); assert.equal(s.breached, false);
+  s = updateTrailingStop(s.hwm, 110, 0.05);
+  assert.equal(s.hwm, 110); assert.equal(s.stop, 104.5); assert.equal(s.breached, false);
+  s = updateTrailingStop(s.hwm, 108, 0.05); // small pullback, still above stop
+  assert.equal(s.hwm, 110); // mark holds
+  assert.equal(s.breached, false);
+});
+
+test('updateTrailingStop breaches when price falls the trail distance from the peak', () => {
+  // Peak 110, 5% trail -> stop 104.5. A drop to 104 breaches.
+  let s = updateTrailingStop(110, 110, 0.05);
+  s = updateTrailingStop(s.hwm, 104, 0.05);
+  assert.equal(s.breached, true);
+  assert.equal(s.stop, 104.5);
+});
+
+test('updateTrailingStop seeds the mark from the first price', () => {
+  const s = updateTrailingStop(undefined, 50, 0.1);
+  assert.equal(s.hwm, 50);
+  assert.equal(s.stop, 45);
 });

@@ -10,7 +10,7 @@ import { ensemble, sizePosition, STRATEGIES, PRESETS, describeStrategies, descri
 import { reviewDecision, applyReview, mistralConfigured, getBudget } from './mistral.js';
 import { modelStrategy } from './model.js';
 import { getModel, listTrained, trainAndRegister } from './model-registry.js';
-import { computeBracket } from './brackets.js';
+import { computeBracket, updateTrailingStop } from './brackets.js';
 import * as broker from './alpaca.js';
 
 const state = {
@@ -29,7 +29,9 @@ const state = {
   useLlm: true,
   // Protective exits attached to each entry (null = off). slPercent 0.05 = a 5%
   // stop; tpPercent 0.10 = a 10% target. Managed broker-side as a bracket.
-  brackets: { enabled: false, slPercent: 0.05, tpPercent: 0.10 },
+  brackets: { enabled: false, slPercent: 0.05, tpPercent: 0.10, trailPercent: 0 },
+  // Per-symbol high-water mark for the live trailing stop (peak since entry).
+  highWaterMarks: {},
   limits: { ...DEFAULT_LIMITS },
   ordersToday: 0,
   ordersDate: new Date().toISOString().slice(0, 10),
@@ -172,6 +174,11 @@ export function updateConfig(patch = {}) {
     if (b.tpPercent != null) {
       const n = Number(b.tpPercent);
       if (Number.isFinite(n) && n > 0 && n <= 2) state.brackets.tpPercent = n;
+    }
+    if (b.trailPercent != null) {
+      const n = Number(b.trailPercent);
+      // 0 disables the trailing stop; otherwise cap it like the hard stop.
+      if (Number.isFinite(n) && n >= 0 && n <= 0.5) state.brackets.trailPercent = n;
     }
   }
   // A preset sets both the strategy set and the agreement threshold; an
@@ -325,6 +332,28 @@ export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun
 
       const price = technical.price;
       const held = posBySymbol[symbol];
+
+      // Live trailing stop: ratchet the peak on every held position and force an
+      // exit if price falls the trail distance below it. This runs AFTER the LLM
+      // review, so a protective stop can never be vetoed or damped — a stop is a
+      // stop. Client-side trailing complements the static broker-side bracket.
+      let trailing = null;
+      if (state.brackets.enabled && state.brackets.trailPercent > 0 && held?.qty > 0) {
+        const t = updateTrailingStop(state.highWaterMarks[symbol], price, state.brackets.trailPercent);
+        state.highWaterMarks[symbol] = t.hwm;
+        trailing = { hwm: t.hwm, stop: t.stop, breached: t.breached };
+        if (t.breached) {
+          decision = {
+            action: 'SELL', confidence: 1, agreement: 'trailing stop',
+            rationale: `Trailing stop hit at ${t.stop} (peak ${t.hwm}, ${(state.brackets.trailPercent * 100).toFixed(1)}% trail)`,
+            signals: [], trailingExit: true, llm: null,
+          };
+        }
+      } else if (!held || held.qty <= 0) {
+        // Flat: forget the peak so the next entry starts a fresh trail.
+        delete state.highWaterMarks[symbol];
+      }
+
       let order = null, gate = null, submitted = null;
 
       if (decision.action === 'BUY') {
@@ -367,6 +396,7 @@ export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun
         signals: decision.signals, llm: decision.llm || null,
         model: decision.model || null,
         vetoed: decision.vetoed || false, damped: decision.damped || false,
+        trailingExit: decision.trailingExit || false, trailing,
         order, gate, submitted, bracket, dryRun,
       };
       results.push(record);

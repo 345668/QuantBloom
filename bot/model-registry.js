@@ -10,12 +10,12 @@
 // ---------------------------------------------------------------------------
 
 import { buildDataset, temporalSplit } from './features.js';
-import { trainLogistic, trainPCA, evaluate, modelStrategy } from './model.js';
+import { trainLogistic, trainPCA, trainEnsemble, evaluate, modelStrategy } from './model.js';
 import { trainGBM, featureImportance } from './gbm.js';
 import { summarise, deflatedSharpe } from './statistics.js';
 import { loadStore, persist } from './persistence.js';
 
-export const MODEL_TYPES = ['logistic', 'gbm', 'pca'];
+export const MODEL_TYPES = ['logistic', 'gbm', 'pca', 'ensemble'];
 
 // Publish thresholds. Deliberately demanding — most strategies fail these, and
 // that is the correct outcome, not a bug to be tuned away.
@@ -143,6 +143,8 @@ export function trainAndRegister(candles, config = {}) {
       })
     : modelType === 'pca'
     ? trainPCA(split.train.X, split.train.y, { k: config.k || 5, featureNames: dataset.featureNames })
+    : modelType === 'ensemble'
+    ? trainEnsemble(split.train.X, split.train.y, { k: config.k || 5, featureNames: dataset.featureNames })
     : trainLogistic(split.train.X, split.train.y, { epochs, lr, l2, featureNames: dataset.featureNames });
   if (!model) return { ok: false, error: 'Training failed' };
 

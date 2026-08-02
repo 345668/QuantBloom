@@ -93,7 +93,7 @@ export default function ModelLabPanel() {
           </div>
 
           <div className="ml-modeltype">
-            {[['gbm', 'Gradient boosting'], ['logistic', 'Logistic'], ['pca', 'PCA factors']].map(([k, label]) => (
+            {[['gbm', 'Gradient boosting'], ['logistic', 'Logistic'], ['pca', 'PCA factors'], ['ensemble', 'Ensemble']].map(([k, label]) => (
               <button key={k} className={`ml-mt-btn ${modelType === k ? 'active' : ''}`}
                 onClick={() => setModelType(k)}
                 title={k === 'gbm' ? 'Tree ensemble — captures non-linear feature interactions' : 'Linear baseline'}>
@@ -103,7 +103,7 @@ export default function ModelLabPanel() {
           </div>
 
           <button className="ml-train" onClick={train} disabled={busy}>
-            {busy ? 'Training…' : `Train ${{ gbm: 'gradient-boosting', logistic: 'logistic', pca: 'PCA latent-factor' }[modelType]} model`}
+            {busy ? 'Training…' : `Train ${{ gbm: 'gradient-boosting', logistic: 'logistic', pca: 'PCA latent-factor', ensemble: 'ensemble' }[modelType]} model`}
           </button>
           <div className="ml-hint">
             19 point-in-time features · triple-barrier labels · temporal 70/30 split.
