@@ -2493,3 +2493,6 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
 .bot-bracket-inputs label { display: flex; align-items: center; gap: 3px; color: var(--text-dim); text-transform: uppercase; font-size: 8px; }
 .bot-bracket-inputs input { width: 38px; background: var(--bg-input); border: 1px solid var(--border); color: var(--text-body); font-family: inherit; font-size: 10px; padding: 2px 3px; }
 .bot-bracket-rr { color: var(--accent-neutral); font-weight: 700; }
+
+/* --- Model Lab: market features toggle --- */
+.ml-market-toggle { display: flex; align-items: center; gap: 5px; font-size: 9px; color: var(--text-secondary); margin: 5px 0; }

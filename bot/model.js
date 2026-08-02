@@ -13,7 +13,7 @@
 // signal the SAME tested backtester and live engine consume.
 // ---------------------------------------------------------------------------
 
-import { featuresAt, FEATURE_NAMES } from './features.js';
+import { featuresAt, FEATURE_NAMES, marketFeaturesAt } from './features.js';
 import { predictProbaGBM, trainGBM } from './gbm.js';
 import { fitPCA, transformPCA, totalExplained } from './pca.js';
 
@@ -194,9 +194,17 @@ function rankAuc(scores, labels) {
  * model's distance from the decision boundary, so a marginal prediction sizes
  * small — the same discipline the rule strategies use.
  */
-export function modelStrategy(model, candles, t, { buyThreshold = 0.55, sellThreshold = 0.45 } = {}) {
-  const feat = featuresAt(candles, t);
+export function modelStrategy(model, candles, t, { buyThreshold = 0.55, sellThreshold = 0.45, benchCloses = null } = {}) {
+  let feat = featuresAt(candles, t);
   if (!feat) return { action: 'HOLD', confidence: 0, rationale: 'Insufficient history' };
+  // If the model was trained with market-relative features, the live vector must
+  // include them too (train/live parity). Without the benchmark, refuse rather
+  // than feed the model a differently-shaped vector.
+  const usesMarket = (model.featureNames?.length || feat.length) > feat.length;
+  if (usesMarket) {
+    if (!benchCloses) return { action: 'HOLD', confidence: 0, rationale: 'Model needs a benchmark series (not supplied)' };
+    feat = feat.concat(marketFeaturesAt(candles, benchCloses, t));
+  }
   const p = predictProba(model, feat);
   if (p >= buyThreshold) return { action: 'BUY', confidence: +((p - 0.5) * 2).toFixed(3), rationale: `Model P(up)=${p.toFixed(2)}` };
   if (p <= sellThreshold) return { action: 'SELL', confidence: +((0.5 - p) * 2).toFixed(3), rationale: `Model P(up)=${p.toFixed(2)}` };

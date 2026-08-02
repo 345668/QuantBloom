@@ -2756,6 +2756,8 @@ const botFetchNews = async (symbol) => {
 };
 // A year of daily candles for the active model's feature computation.
 const botFetchCandles = async (symbol) => yahooCandles(symbol, '1d', '1y').catch(() => null);
+// SPY as the market benchmark for cross-asset features (1y for the live path).
+const botFetchBenchmark = async () => yahooCandles('SPY', '1d', '1y').catch(() => null);
 
 app.get('/api/v1/bot/status', async (req, res) => {
   try {
@@ -2798,7 +2800,9 @@ app.post('/api/v1/bot/autotrain', async (req, res) => {
   try {
     const result = await bot.autoTrain({
       fetchCandles: (symbol) => yahooCandles(symbol, '1d', '5y').catch(() => null),
+      fetchBenchmark: () => yahooCandles('SPY', '1d', '5y').catch(() => null),
       modelType: req.body?.modelType || 'gbm',
+      useMarket: Boolean(req.body?.useMarket),
     });
     res.json({ ...result, state: bot.getState() });
   } catch (err) {
@@ -2817,6 +2821,7 @@ app.post('/api/v1/bot/run', async (req, res) => {
       fetchTechnical: botFetchTechnical,
       fetchNews: botFetchNews,
       fetchCandles: botFetchCandles,
+      fetchBenchmark: botFetchBenchmark,
       dryRun: Boolean(req.body?.dryRun),
     });
     res.json(result);
@@ -2904,6 +2909,8 @@ app.post('/api/v1/bot/train', async (req, res) => {
     if (candles.length < 300) {
       return res.json({ ok: false, error: `Only ${candles.length} bars for ${symbol}; need 300+` });
     }
+    // Optional cross-asset (SPY) market-relative features.
+    const benchmark = body.useMarket ? await yahooCandles('SPY', '1d', range).catch(() => null) : null;
     const result = models.trainAndRegister(candles, {
       symbol, range,
       modelType: body.modelType || 'logistic',
@@ -2913,6 +2920,7 @@ app.post('/api/v1/bot/train', async (req, res) => {
         horizon: parseInt(body.horizon) || 10,
       },
       testFraction: Number(body.testFraction) || 0.3,
+      benchmark,
     });
     res.json(result);
   } catch (err) {

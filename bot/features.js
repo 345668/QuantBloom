@@ -149,31 +149,100 @@ export function tripleBarrierLabel(candles, t, { up = 0.03, down = 0.02, horizon
   return exit > entry ? 1 : 0;
 }
 
+// --- Cross-asset / market-relative features --------------------------------
+//
+// A stock's move relative to the market carries information its own history does
+// not: whether it is leading or lagging, its beta, and the volatility regime.
+// These are computed against a benchmark close series (e.g. SPY) aligned to the
+// stock's bars, strictly point-in-time.
+
+export const MARKET_FEATURE_NAMES = [
+  'excessRet1',    // stock 1-bar return minus the benchmark's
+  'excessRet5',    // 5-bar excess return
+  'relStrength20', // 20-bar return minus the benchmark's (relative strength)
+  'beta60',        // 60-bar beta to the benchmark
+  'corr60',        // 60-bar return correlation to the benchmark
+];
+
+/**
+ * Align a benchmark candle series to a stock's candle times: returns an array
+ * of benchmark closes the same length as `candles`, carrying the last known
+ * close forward across any gaps. Entries before the first match are null.
+ */
+export function alignBenchmark(candles, benchCandles) {
+  const byTime = new Map(benchCandles.map(c => [c.time, c.close]));
+  let last = null;
+  return candles.map(c => {
+    if (byTime.has(c.time)) last = byTime.get(c.time);
+    return last;
+  });
+}
+
+const retAt = (arr, i, lag) => (i - lag >= 0 && arr[i - lag]) ? arr[i] / arr[i - lag] - 1 : 0;
+
+/** Market-relative features at bar t, using benchmark closes aligned to `candles`. */
+export function marketFeaturesAt(candles, benchCloses, t) {
+  const closes = candles.map(c => c.close);
+  const b = benchCloses;
+  // Without an aligned benchmark value, contribute neutral zeros.
+  if (!b || b[t] == null || t < 60) return MARKET_FEATURE_NAMES.map(() => 0);
+
+  const excessRet1 = retAt(closes, t, 1) - retAt(b, t, 1);
+  const excessRet5 = retAt(closes, t, 5) - retAt(b, t, 5);
+  const relStrength20 = retAt(closes, t, 20) - retAt(b, t, 20);
+
+  // 60-bar beta and correlation from daily returns.
+  const sr = [], br = [];
+  for (let i = t - 59; i <= t; i++) {
+    if (b[i - 1] == null || b[i] == null) continue;
+    sr.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+    br.push((b[i] - b[i - 1]) / b[i - 1]);
+  }
+  let beta = 0, corr = 0;
+  if (sr.length > 5) {
+    const ms = sr.reduce((a, x) => a + x, 0) / sr.length;
+    const mb = br.reduce((a, x) => a + x, 0) / br.length;
+    let cov = 0, vb = 0, vs = 0;
+    for (let i = 0; i < sr.length; i++) {
+      cov += (sr[i] - ms) * (br[i] - mb);
+      vb += (br[i] - mb) ** 2;
+      vs += (sr[i] - ms) ** 2;
+    }
+    beta = vb > 0 ? cov / vb : 0;
+    corr = (vb > 0 && vs > 0) ? cov / Math.sqrt(vb * vs) : 0;
+  }
+  return [excessRet1, excessRet5, relStrength20, beta, corr].map(v => (Number.isFinite(v) ? v : 0));
+}
+
 /**
  * Build an aligned training set (X, y) from a candle series.
  *
  * Rows are ordered oldest-first and each row's features are strictly
  * point-in-time. Only rows whose label is fully determined (enough future
- * bars) are included.
+ * bars) are included. When `benchCandles` is supplied, cross-asset market-
+ * relative features are appended and the returned featureNames reflect that.
  */
-export function buildDataset(candles, labelConfig = {}) {
+export function buildDataset(candles, labelConfig = {}, benchCandles = null) {
   const X = [], y = [], times = [];
   // 200 bars so the SMA200 and long-lookback features are fully formed from the
   // first training row — degraded early features are just noise to the model.
   const warmup = 200;
   const horizon = labelConfig.horizon || 10;
+  const benchCloses = benchCandles ? alignBenchmark(candles, benchCandles) : null;
+  const featureNames = benchCloses ? [...FEATURE_NAMES, ...MARKET_FEATURE_NAMES] : FEATURE_NAMES;
 
   for (let t = warmup; t < candles.length - horizon; t++) {
-    const feat = featuresAt(candles, t);
+    let feat = featuresAt(candles, t);
     const label = tripleBarrierLabel(candles, t, labelConfig);
     if (feat && label != null) {
+      if (benchCloses) feat = feat.concat(marketFeaturesAt(candles, benchCloses, t));
       X.push(feat);
       y.push(label);
       times.push(candles[t].time);
     }
   }
 
-  return { X, y, times, featureNames: FEATURE_NAMES };
+  return { X, y, times, featureNames };
 }
 
 /**

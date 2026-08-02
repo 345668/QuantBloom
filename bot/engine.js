@@ -11,6 +11,7 @@ import { reviewDecision, applyReview, mistralConfigured, getBudget } from './mis
 import { modelStrategy } from './model.js';
 import { getModel, listTrained, trainAndRegister } from './model-registry.js';
 import { computeBracket, updateTrailingStop } from './brackets.js';
+import { alignBenchmark } from './features.js';
 import * as broker from './alpaca.js';
 
 const state = {
@@ -79,7 +80,7 @@ export function getState() {
     availableModels: listTrained().map(m => ({
       id: m.id, symbol: m.symbol, modelType: m.modelType,
       testAuc: m.testMetrics?.auc ?? null,
-      eligible: m.eligible, published: m.published,
+      eligible: m.eligible, published: m.published, usesMarket: m.usesMarket,
       createdAt: m.createdAt,
     })),
     activeModel: state.activeModelId ? (() => {
@@ -114,14 +115,16 @@ export function setActiveModel(modelId) {
  * or the UI can call it. Honest by construction: it still only promotes what
  * the gate/metrics justify, and reports when nothing is worth using.
  */
-export async function autoTrain({ fetchCandles, modelType = 'gbm' } = {}) {
+export async function autoTrain({ fetchCandles, fetchBenchmark, modelType = 'gbm', useMarket = false } = {}) {
   if (!fetchCandles) return { ok: false, error: 'No candle source' };
+  // Fetch the benchmark once when market-relative features are requested.
+  const benchmark = (useMarket && fetchBenchmark) ? await fetchBenchmark().catch(() => null) : null;
   const trained = [];
   for (const symbol of state.watchlist) {
     try {
       const candles = await fetchCandles(symbol).catch(() => null);
       if (!candles || candles.length < 300) { trained.push({ symbol, ok: false, error: 'insufficient history' }); continue; }
-      const out = trainAndRegister(candles, { symbol, modelType, range: '5y' });
+      const out = trainAndRegister(candles, { symbol, modelType, range: '5y', benchmark });
       if (!out.ok) { trained.push({ symbol, ok: false, error: out.error }); continue; }
       const m = out.model;
       trained.push({ symbol, ok: true, id: m.id, auc: m.testMetrics?.auc ?? null, eligible: m.eligible });
@@ -242,8 +245,11 @@ export async function killSwitch(who = 'user') {
  * @param fetchTechnical - async (symbol) => technical payload
  * @param fetchNews      - async (symbol) => headlines
  * @param fetchCandles   - async (symbol) => OHLCV[] (only used when a model is active)
+ * @param fetchBenchmark - async () => OHLCV[] for the market benchmark (SPY),
+ *                         only used when the active model was trained with
+ *                         market-relative features.
  */
-export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = false }) {
+export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, fetchBenchmark, dryRun = false }) {
   rollDayIfNeeded();
   const startedAt = new Date().toISOString();
 
@@ -291,6 +297,14 @@ export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun
     audit('auto_halt', { reason: halt.reason, detail: halt.detail });
   }
 
+  // If the active model was trained with market-relative features, fetch the
+  // benchmark once for the whole cycle so every symbol aligns to the same SPY.
+  const activeRec = state.activeModelId ? getModel(state.activeModelId) : null;
+  let benchCandles = null;
+  if (activeRec?.usesMarket && fetchBenchmark) {
+    benchCandles = await fetchBenchmark().catch(() => null);
+  }
+
   const results = [];
   for (const symbol of state.watchlist) {
     try {
@@ -309,7 +323,9 @@ export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun
           results.push({ symbol, action: 'SKIP', reason: 'No candle history for model' });
           continue;
         }
-        const sig = modelStrategy(modelRec.artifact, candles, candles.length - 1);
+        const benchCloses = (modelRec.usesMarket && benchCandles)
+          ? alignBenchmark(candles, benchCandles) : null;
+        const sig = modelStrategy(modelRec.artifact, candles, candles.length - 1, { benchCloses });
         decision = {
           action: sig.action, confidence: sig.confidence,
           agreement: `${modelRec.modelType} model`,

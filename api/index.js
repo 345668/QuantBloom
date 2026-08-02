@@ -1627,20 +1627,72 @@ function tripleBarrierLabel(candles, t, { up = 0.03, down = 0.02, horizon = 10 }
   const exit = candles[t + horizon].close;
   return exit > entry ? 1 : 0;
 }
-function buildDataset(candles, labelConfig = {}) {
+var MARKET_FEATURE_NAMES = [
+  "excessRet1",
+  // stock 1-bar return minus the benchmark's
+  "excessRet5",
+  // 5-bar excess return
+  "relStrength20",
+  // 20-bar return minus the benchmark's (relative strength)
+  "beta60",
+  // 60-bar beta to the benchmark
+  "corr60"
+  // 60-bar return correlation to the benchmark
+];
+function alignBenchmark(candles, benchCandles) {
+  const byTime = new Map(benchCandles.map((c) => [c.time, c.close]));
+  let last = null;
+  return candles.map((c) => {
+    if (byTime.has(c.time)) last = byTime.get(c.time);
+    return last;
+  });
+}
+var retAt = (arr, i, lag) => i - lag >= 0 && arr[i - lag] ? arr[i] / arr[i - lag] - 1 : 0;
+function marketFeaturesAt(candles, benchCloses, t) {
+  const closes = candles.map((c) => c.close);
+  const b = benchCloses;
+  if (!b || b[t] == null || t < 60) return MARKET_FEATURE_NAMES.map(() => 0);
+  const excessRet1 = retAt(closes, t, 1) - retAt(b, t, 1);
+  const excessRet5 = retAt(closes, t, 5) - retAt(b, t, 5);
+  const relStrength20 = retAt(closes, t, 20) - retAt(b, t, 20);
+  const sr = [], br = [];
+  for (let i = t - 59; i <= t; i++) {
+    if (b[i - 1] == null || b[i] == null) continue;
+    sr.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+    br.push((b[i] - b[i - 1]) / b[i - 1]);
+  }
+  let beta = 0, corr = 0;
+  if (sr.length > 5) {
+    const ms = sr.reduce((a, x) => a + x, 0) / sr.length;
+    const mb = br.reduce((a, x) => a + x, 0) / br.length;
+    let cov = 0, vb = 0, vs = 0;
+    for (let i = 0; i < sr.length; i++) {
+      cov += (sr[i] - ms) * (br[i] - mb);
+      vb += (br[i] - mb) ** 2;
+      vs += (sr[i] - ms) ** 2;
+    }
+    beta = vb > 0 ? cov / vb : 0;
+    corr = vb > 0 && vs > 0 ? cov / Math.sqrt(vb * vs) : 0;
+  }
+  return [excessRet1, excessRet5, relStrength20, beta, corr].map((v) => Number.isFinite(v) ? v : 0);
+}
+function buildDataset(candles, labelConfig = {}, benchCandles = null) {
   const X = [], y = [], times = [];
   const warmup = 200;
   const horizon = labelConfig.horizon || 10;
+  const benchCloses = benchCandles ? alignBenchmark(candles, benchCandles) : null;
+  const featureNames = benchCloses ? [...FEATURE_NAMES, ...MARKET_FEATURE_NAMES] : FEATURE_NAMES;
   for (let t = warmup; t < candles.length - horizon; t++) {
-    const feat = featuresAt(candles, t);
+    let feat = featuresAt(candles, t);
     const label = tripleBarrierLabel(candles, t, labelConfig);
     if (feat && label != null) {
+      if (benchCloses) feat = feat.concat(marketFeaturesAt(candles, benchCloses, t));
       X.push(feat);
       y.push(label);
       times.push(candles[t].time);
     }
   }
-  return { X, y, times, featureNames: FEATURE_NAMES };
+  return { X, y, times, featureNames };
 }
 function temporalSplit(dataset, testFraction = 0.3) {
   const n = dataset.X.length;
@@ -1959,9 +2011,14 @@ function rankAuc(scores, labels) {
   });
   return (rankSum - pos.length * (pos.length + 1) / 2) / (pos.length * neg.length);
 }
-function modelStrategy(model2, candles, t, { buyThreshold = 0.55, sellThreshold = 0.45 } = {}) {
-  const feat = featuresAt(candles, t);
+function modelStrategy(model2, candles, t, { buyThreshold = 0.55, sellThreshold = 0.45, benchCloses = null } = {}) {
+  let feat = featuresAt(candles, t);
   if (!feat) return { action: "HOLD", confidence: 0, rationale: "Insufficient history" };
+  const usesMarket = (model2.featureNames?.length || feat.length) > feat.length;
+  if (usesMarket) {
+    if (!benchCloses) return { action: "HOLD", confidence: 0, rationale: "Model needs a benchmark series (not supplied)" };
+    feat = feat.concat(marketFeaturesAt(candles, benchCloses, t));
+  }
   const p = predictProba(model2, feat);
   if (p >= buyThreshold) return { action: "BUY", confidence: +((p - 0.5) * 2).toFixed(3), rationale: `Model P(up)=${p.toFixed(2)}` };
   if (p <= sellThreshold) return { action: "SELL", confidence: +((0.5 - p) * 2).toFixed(3), rationale: `Model P(up)=${p.toFixed(2)}` };
@@ -2202,7 +2259,7 @@ function id() {
   return `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
 function backtestModel(model2, candles, testStartTime, opts = {}) {
-  const { initialCapital = 1e5, maxPositionPercent = 20 } = opts;
+  const { initialCapital = 1e5, maxPositionPercent = 20, benchCloses = null } = opts;
   const startIdx = candles.findIndex((c) => c.time >= testStartTime);
   if (startIdx < 60) return null;
   let cash = initialCapital, shares = 0;
@@ -2210,7 +2267,7 @@ function backtestModel(model2, candles, testStartTime, opts = {}) {
   let trades = 0;
   const slip = 7e-4;
   for (let t = startIdx; t < candles.length - 1; t++) {
-    const sig = modelStrategy(model2, candles, t);
+    const sig = modelStrategy(model2, candles, t, { benchCloses });
     const next = candles[t + 1];
     const eq = cash + shares * candles[t].close;
     if (sig.action === "BUY" && shares === 0) {
@@ -2281,7 +2338,9 @@ function trainAndRegister(candles, config = {}) {
   if (!candles || candles.length < 300) {
     return { ok: false, error: `Need 300+ bars, got ${candles?.length || 0}` };
   }
-  const dataset = buildDataset(candles, label);
+  const benchCandles = config.benchmark || null;
+  const benchCloses = benchCandles ? alignBenchmark(candles, benchCandles) : null;
+  const dataset = buildDataset(candles, label, benchCandles);
   if (dataset.X.length < 100) {
     return { ok: false, error: `Only ${dataset.X.length} labeled rows; need 100+` };
   }
@@ -2297,7 +2356,7 @@ function trainAndRegister(candles, config = {}) {
   const trainMetrics = evaluate(model2, split.train.X, split.train.y);
   const testMetrics = evaluate(model2, split.test.X, split.test.y);
   const testStartTime = split.test.times[0];
-  const backtest = backtestModel(model2, candles, testStartTime, config);
+  const backtest = backtestModel(model2, candles, testStartTime, { ...config, benchCloses });
   const gate = evaluateGate({ testMetrics, backtest });
   const record = {
     id: id(),
@@ -2307,6 +2366,8 @@ function trainAndRegister(candles, config = {}) {
     createdAt: (/* @__PURE__ */ new Date()).toISOString(),
     config: { label, testFraction, epochs, lr, l2 },
     artifact: model2,
+    usesMarket: !!benchCloses,
+    featureCount: dataset.featureNames.length,
     trainMetrics,
     testMetrics,
     backtest,
@@ -2616,6 +2677,7 @@ function getState() {
       testAuc: m.testMetrics?.auc ?? null,
       eligible: m.eligible,
       published: m.published,
+      usesMarket: m.usesMarket,
       createdAt: m.createdAt
     })),
     activeModel: state.activeModelId ? (() => {
@@ -2636,8 +2698,9 @@ function setActiveModel(modelId) {
   audit("model_selected", { modelId, type: m.modelType, symbol: m.symbol, eligible: m.eligible });
   return { ok: true, activeModelId: modelId, eligible: m.eligible };
 }
-async function autoTrain({ fetchCandles, modelType = "gbm" } = {}) {
+async function autoTrain({ fetchCandles, fetchBenchmark, modelType = "gbm", useMarket = false } = {}) {
   if (!fetchCandles) return { ok: false, error: "No candle source" };
+  const benchmark = useMarket && fetchBenchmark ? await fetchBenchmark().catch(() => null) : null;
   const trained2 = [];
   for (const symbol of state.watchlist) {
     try {
@@ -2646,7 +2709,7 @@ async function autoTrain({ fetchCandles, modelType = "gbm" } = {}) {
         trained2.push({ symbol, ok: false, error: "insufficient history" });
         continue;
       }
-      const out = trainAndRegister(candles, { symbol, modelType, range: "5y" });
+      const out = trainAndRegister(candles, { symbol, modelType, range: "5y", benchmark });
       if (!out.ok) {
         trained2.push({ symbol, ok: false, error: out.error });
         continue;
@@ -2762,7 +2825,7 @@ async function killSwitch(who = "user") {
   audit("kill_switch_complete", { cancelled, closed });
   return { ok: true, cancelled, closed };
 }
-async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = false }) {
+async function runCycle({ fetchTechnical, fetchNews, fetchCandles, fetchBenchmark, dryRun = false }) {
   rollDayIfNeeded();
   const startedAt = (/* @__PURE__ */ new Date()).toISOString();
   if (!state.enabled && !dryRun) {
@@ -2803,6 +2866,11 @@ async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = fals
     state.requiresManualRestart = halt.requiresManualRestart;
     audit("auto_halt", { reason: halt.reason, detail: halt.detail });
   }
+  const activeRec = state.activeModelId ? getModel(state.activeModelId) : null;
+  let benchCandles = null;
+  if (activeRec?.usesMarket && fetchBenchmark) {
+    benchCandles = await fetchBenchmark().catch(() => null);
+  }
   const results = [];
   for (const symbol of state.watchlist) {
     try {
@@ -2819,7 +2887,8 @@ async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = fals
           results.push({ symbol, action: "SKIP", reason: "No candle history for model" });
           continue;
         }
-        const sig = modelStrategy(modelRec.artifact, candles, candles.length - 1);
+        const benchCloses = modelRec.usesMarket && benchCandles ? alignBenchmark(candles, benchCandles) : null;
+        const sig = modelStrategy(modelRec.artifact, candles, candles.length - 1, { benchCloses });
         decision = {
           action: sig.action,
           confidence: sig.confidence,
@@ -5511,6 +5580,7 @@ var botFetchNews = async (symbol) => {
   return resp.ok ? resp.json() : [];
 };
 var botFetchCandles = async (symbol) => yahooCandles(symbol, "1d", "1y").catch(() => null);
+var botFetchBenchmark = async () => yahooCandles("SPY", "1d", "1y").catch(() => null);
 app.get("/api/v1/bot/status", async (req, res) => {
   try {
     const state2 = getState();
@@ -5544,7 +5614,9 @@ app.post("/api/v1/bot/autotrain", async (req, res) => {
   try {
     const result = await autoTrain({
       fetchCandles: (symbol) => yahooCandles(symbol, "1d", "5y").catch(() => null),
-      modelType: req.body?.modelType || "gbm"
+      fetchBenchmark: () => yahooCandles("SPY", "1d", "5y").catch(() => null),
+      modelType: req.body?.modelType || "gbm",
+      useMarket: Boolean(req.body?.useMarket)
     });
     res.json({ ...result, state: getState() });
   } catch (err) {
@@ -5560,6 +5632,7 @@ app.post("/api/v1/bot/run", async (req, res) => {
       fetchTechnical: botFetchTechnical,
       fetchNews: botFetchNews,
       fetchCandles: botFetchCandles,
+      fetchBenchmark: botFetchBenchmark,
       dryRun: Boolean(req.body?.dryRun)
     });
     res.json(result);
@@ -5623,6 +5696,7 @@ app.post("/api/v1/bot/train", async (req, res) => {
     if (candles.length < 300) {
       return res.json({ ok: false, error: `Only ${candles.length} bars for ${symbol}; need 300+` });
     }
+    const benchmark = body.useMarket ? await yahooCandles("SPY", "1d", range).catch(() => null) : null;
     const result = trainAndRegister(candles, {
       symbol,
       range,
@@ -5632,7 +5706,8 @@ app.post("/api/v1/bot/train", async (req, res) => {
         down: Number(body.down) || 0.02,
         horizon: parseInt(body.horizon) || 10
       },
-      testFraction: Number(body.testFraction) || 0.3
+      testFraction: Number(body.testFraction) || 0.3,
+      benchmark
     });
     res.json(result);
   } catch (err) {

@@ -27,6 +27,7 @@ export default function ModelLabPanel() {
   const [horizon, setHorizon] = useState(10);
   const [up, setUp] = useState(3);
   const [down, setDown] = useState(2);
+  const [useMarket, setUseMarket] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -43,7 +44,7 @@ export default function ModelLabPanel() {
     setBusy(true); setError(null); setResult(null);
     try {
       const r = await post('/api/v1/bot/train', {
-        symbol, range, modelType, horizon, up: up / 100, down: down / 100,
+        symbol, range, modelType, horizon, up: up / 100, down: down / 100, useMarket,
       });
       if (!r.ok) setError(r.error || 'Training failed');
       else setResult(r);
@@ -102,11 +103,16 @@ export default function ModelLabPanel() {
             ))}
           </div>
 
+          <label className="ml-market-toggle" title="Add SPY-relative features: excess return, relative strength, beta and correlation to the market">
+            <input type="checkbox" checked={useMarket} onChange={e => setUseMarket(e.target.checked)} />
+            + market features (vs SPY)
+          </label>
+
           <button className="ml-train" onClick={train} disabled={busy}>
             {busy ? 'Training…' : `Train ${{ gbm: 'gradient-boosting', logistic: 'logistic', pca: 'PCA latent-factor', ensemble: 'ensemble' }[modelType]} model`}
           </button>
           <div className="ml-hint">
-            19 point-in-time features · triple-barrier labels · temporal 70/30 split.
+            {useMarket ? '24' : '19'} point-in-time features · triple-barrier labels · temporal 70/30 split.
             LightGBM/CatBoost & RL train via the local Python pipeline — see MODEL_TRAINING.md.
           </div>
 

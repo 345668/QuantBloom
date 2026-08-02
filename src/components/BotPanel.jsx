@@ -173,7 +173,7 @@ export default function BotPanel() {
             disabled={busy === 'model'}
             title={`${m.modelType} trained on ${m.symbol} · AUC ${m.testAuc ?? '—'} · ${m.eligible ? 'passed publish gate' : 'FAILED gate — paper testing only'}`}
             onClick={() => act('model', () => post('/api/v1/bot/model', { modelId: m.id }))}>
-            {m.symbol} {m.modelType.toUpperCase()}{m.eligible ? ' ✓' : ' ⚠'}
+            {m.symbol} {m.modelType.toUpperCase()}{m.usesMarket ? '+MKT' : ''}{m.eligible ? ' ✓' : ' ⚠'}
           </button>
         ))}
         {!(data.availableModels || []).length && (
