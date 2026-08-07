@@ -42,6 +42,7 @@ import MultiChartPanel from './components/MultiChartPanel.jsx';
 import CustomIndicatorPanel from './components/CustomIndicatorPanel.jsx';
 import TVMPanel from './components/TVMPanel.jsx';
 import ModelLabPanel from './components/ModelLabPanel.jsx';
+import PanelMaximizer from './components/PanelMaximizer.jsx';
 
 function Dashboard() {
   const { state, dispatch } = useDashboard();
@@ -187,6 +188,9 @@ function Dashboard() {
 
       {/* Watchlist Modal */}
       {showWatchlist && <WatchlistModal onClose={() => setShowWatchlist(false)} />}
+
+      {/* Global panel pop-out (Ctrl+Shift+M) */}
+      <PanelMaximizer />
     </div>
   );
 }

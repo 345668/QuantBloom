@@ -2496,3 +2496,21 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
 
 /* --- Model Lab: market features toggle --- */
 .ml-market-toggle { display: flex; align-items: center; gap: 5px; font-size: 9px; color: var(--text-secondary); margin: 5px 0; }
+
+/* --- Panel pop-out / maximize --- */
+.panel-maximize-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 9998; }
+.panel.panel-maximized {
+  position: fixed; inset: 16px; z-index: 9999; overflow: auto;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.7); border: 1px solid var(--border-bright);
+}
+.panel-maximize-close {
+  position: fixed; top: 24px; right: 28px; z-index: 10000;
+  font-size: 10px; padding: 3px 8px; border: 1px solid var(--accent-down);
+  color: var(--accent-down); background: var(--bg-primary); opacity: 0.92;
+}
+.panel-maximize-close:hover { background: var(--accent-down); color: #fff; }
+.panel-maximize-hint {
+  position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 9997;
+  font-size: 10px; color: var(--text-secondary); background: var(--bg-panel);
+  border: 1px solid var(--border); padding: 4px 10px; border-radius: 3px; opacity: 0.85;
+}
