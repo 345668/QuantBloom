@@ -86,6 +86,60 @@ export function effectiveHeatRate(powerPrice, gasPrice) {
 }
 
 /**
+ * Two-node locational marginal price with a transmission constraint — the
+ * paper's core illustration (ch. 9). Two buses A and B, each with a local
+ * generator {cost, capacity} and demand, joined by a line with a MW limit.
+ *
+ * The cheaper node serves its own load and exports its spare capacity to the
+ * dearer node, up to the line limit. While the line has slack, one price clears
+ * both nodes. The moment the line saturates and the dearer node must self-supply,
+ * the prices DECOUPLE: the exporting node clears at its (low) cost, the importing
+ * node at its (high) cost. That gap is the congestion basis — the source of
+ * price spikes and the payoff of an FTR.
+ *
+ * @returns {{ lmpA, lmpB, flow(+=A→B), flowMagnitude, lineLimit, congested,
+ *             congestionBasis, dispatchA, dispatchB, unserved, exporter }}
+ */
+export function twoNodeLMP({ genA, genB, demandA = 0, demandB = 0, lineLimit = 0 }) {
+  const T = Math.max(lineLimit, 0);
+  const aCheaper = genA.cost <= genB.cost;
+  const L = aCheaper ? { ...genA, demand: demandA, node: 'A' } : { ...genB, demand: demandB, node: 'B' };
+  const H = aCheaper ? { ...genB, demand: demandB, node: 'B' } : { ...genA, demand: demandA, node: 'A' };
+
+  // Cheaper node serves its own load, then exports spare capacity over the line.
+  const spareL = Math.max(L.capacity - L.demand, 0);
+  const exportLH = Math.min(T, spareL, Math.max(H.demand, 0));
+  const pL = L.demand + exportLH;
+  let pH = H.demand - exportLH;
+  const unserved = Math.max(pH - H.capacity, 0);
+  pH = Math.min(pH, H.capacity);
+
+  const lineFull = exportLH >= T - 1e-9;      // includes T = 0 (islanded)
+  const hProducesLocally = pH > 1e-9;
+  const lHasSpare = pL < L.capacity - 1e-9;
+  const congested = lineFull && hProducesLocally && lHasSpare && H.cost > L.cost;
+
+  let lmpL, lmpH;
+  if (congested) { lmpL = L.cost; lmpH = H.cost; }
+  else { const price = lHasSpare ? L.cost : H.cost; lmpL = price; lmpH = price; }
+
+  const lmpA = aCheaper ? lmpL : lmpH;
+  const lmpB = aCheaper ? lmpH : lmpL;
+  return {
+    lmpA: +lmpA.toFixed(2), lmpB: +lmpB.toFixed(2),
+    flow: +((aCheaper ? exportLH : -exportLH)).toFixed(2), // +ve = A→B
+    flowMagnitude: +exportLH.toFixed(2),
+    lineLimit: T,
+    congested,
+    congestionBasis: +(lmpH - lmpL).toFixed(2),
+    dispatchA: +((aCheaper ? pL : pH)).toFixed(2),
+    dispatchB: +((aCheaper ? pH : pL)).toFixed(2),
+    unserved: +unserved.toFixed(2),
+    exporter: exportLH > 0 ? L.node : null,
+  };
+}
+
+/**
  * Build a realistic merit-order stack from fuel prices. Renewables/nuclear/hydro
  * are near-zero marginal cost; gas and coal are priced through their heat rates,
  * so a change in the gas price re-orders the stack (fuel switching).

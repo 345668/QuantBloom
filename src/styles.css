@@ -2543,3 +2543,14 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
 .power-spark-out { display: flex; gap: 16px; }
 .power-spark-out span:last-child { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .power-hint { font-size: 9px; color: var(--text-dim); margin: 4px 0; line-height: 1.4; }
+
+/* --- Power Desk: two-node congestion --- */
+.twonode-svg { display: block; margin: 6px 0; }
+.twonode-node { fill: var(--text-primary); font-size: 14px; font-weight: 700; font-family: inherit; }
+.twonode-lmp { fill: var(--accent-neutral); font-size: 12px; font-weight: 700; font-family: inherit; }
+.twonode-flow { fill: var(--text-secondary); font-size: 10px; font-family: inherit; }
+.twonode-cong { fill: var(--accent-down); font-size: 10px; font-weight: 700; font-family: inherit; letter-spacing: 0.08em; }
+.twonode-ok { fill: var(--accent-up); font-size: 10px; font-family: inherit; }
+.twonode-stats { display: flex; justify-content: space-between; gap: 8px; margin-top: 4px; }
+.twonode-stats > div { display: flex; flex-direction: column; }
+.twonode-stats span:last-child { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   marginalCostOfThermal, meritOrderDispatch, sparkSpread, darkSpread,
-  effectiveHeatRate, buildStack,
+  effectiveHeatRate, buildStack, twoNodeLMP,
 } from '../charting/power.js';
 
 const close = (a, b, tol = 1e-6) => assert.ok(Math.abs(a - b) <= tol, `${a} vs ${b}`);
@@ -113,4 +113,59 @@ test('a realistic stack clears at a gas unit under normal demand', () => {
   assert.ok(r.clearingPrice > 0);
   assert.equal(r.unserved, 0);
   assert.ok(r.marginalUnit);
+});
+
+// --- Two-node LMP / congestion (the paper's A↔B example) ------------------
+
+const bigCap = { A: { cost: 100, capacity: 1000 }, B: { cost: 10, capacity: 1000 } };
+
+test('uncongested: cheap B serves A over a slack line, one price clears both', () => {
+  // 10 MW at A, 50 MW line: B ships 10 (<50), no congestion, both at $10.
+  const r = twoNodeLMP({ genA: bigCap.A, genB: bigCap.B, demandA: 10, demandB: 0, lineLimit: 50 });
+  assert.equal(r.lmpA, 10);
+  assert.equal(r.lmpB, 10);
+  assert.equal(r.congested, false);
+  assert.equal(r.flow, -10);          // B → A, so signed A→B is negative
+  assert.equal(r.congestionBasis, 0);
+});
+
+test('congested: line saturates, prices decouple to each node cost', () => {
+  // 60 MW at A, 50 MW line: B ships 50 (full), A self-supplies 10 at $100.
+  const r = twoNodeLMP({ genA: bigCap.A, genB: bigCap.B, demandA: 60, demandB: 0, lineLimit: 50 });
+  assert.equal(r.lmpA, 100);
+  assert.equal(r.lmpB, 10);
+  assert.equal(r.congested, true);
+  assert.equal(r.flowMagnitude, 50);  // pinned at the limit
+  assert.equal(r.congestionBasis, 90);
+  assert.equal(r.dispatchA, 10);
+  assert.equal(r.dispatchB, 50);
+});
+
+test('a big enough line removes congestion and re-couples the price', () => {
+  const r = twoNodeLMP({ genA: bigCap.A, genB: bigCap.B, demandA: 60, demandB: 0, lineLimit: 1000 });
+  assert.equal(r.congested, false);
+  assert.equal(r.lmpA, 10);
+  assert.equal(r.lmpB, 10);
+});
+
+test('no line (T=0) islands the nodes — each clears at its own generator', () => {
+  const r = twoNodeLMP({ genA: bigCap.A, genB: bigCap.B, demandA: 60, demandB: 20, lineLimit: 0 });
+  assert.equal(r.lmpA, 100);
+  assert.equal(r.lmpB, 10);
+  assert.equal(r.flowMagnitude, 0);
+  assert.equal(r.congested, true);
+});
+
+test('demand beyond the importing node capacity leaves a shortfall', () => {
+  const r = twoNodeLMP({ genA: { cost: 100, capacity: 5 }, genB: { cost: 10, capacity: 1000 }, demandA: 60, demandB: 0, lineLimit: 50 });
+  // B ships 50, A needs 10 but can only make 5 -> 5 unserved.
+  assert.equal(r.unserved, 5);
+});
+
+test('direction flips when node A is the cheaper one', () => {
+  const r = twoNodeLMP({ genA: { cost: 10, capacity: 1000 }, genB: { cost: 100, capacity: 1000 }, demandA: 0, demandB: 60, lineLimit: 50 });
+  assert.equal(r.flow, 50);      // A → B positive
+  assert.equal(r.lmpA, 10);
+  assert.equal(r.lmpB, 100);     // B congested/importing
+  assert.equal(r.congested, true);
 });
