@@ -2514,3 +2514,32 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
   font-size: 10px; color: var(--text-secondary); background: var(--bg-panel);
   border: 1px solid var(--border); padding: 4px 10px; border-radius: 3px; opacity: 0.85;
 }
+
+/* --- Power Desk --- */
+.power-inputs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-bottom: 6px; }
+.power-inputs label { display: flex; flex-direction: column; font-size: 8px; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.04em; }
+.power-inputs input { background: var(--bg-input); border: 1px solid var(--border); color: var(--text-body); font-family: inherit; font-size: 11px; padding: 3px 5px; margin-top: 2px; }
+.power-demand { font-size: 9px; color: var(--text-secondary); margin-bottom: 6px; }
+.power-demand input[type=range] { width: 100%; accent-color: var(--accent-neutral); }
+.power-clearing { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px; }
+.power-label { display: block; font-size: 8px; text-transform: uppercase; color: var(--text-dim); letter-spacing: 0.05em; }
+.power-price { font-size: 26px; font-weight: 700; color: var(--accent-up); font-variant-numeric: tabular-nums; }
+.power-price.negative { color: var(--accent-down); }
+.power-unit { font-size: 11px; color: var(--text-dim); font-weight: 400; }
+.power-marginal { text-align: right; font-size: 11px; color: var(--text-primary); }
+.power-shortfall { display: block; font-size: 9px; color: var(--accent-down); }
+.power-stack { display: block; margin: 4px 0 8px; background: var(--bg-secondary); border: 1px solid var(--border); }
+.power-axis { fill: var(--text-dim); font-size: 8px; font-family: inherit; }
+.power-table { width: 100%; border-collapse: collapse; font-size: 10px; }
+.power-table th { text-align: right; color: var(--text-dim); font-size: 8px; text-transform: uppercase; padding: 2px 4px; border-bottom: 1px solid var(--border); }
+.power-table th:first-child { text-align: left; }
+.power-table td { text-align: right; padding: 2px 4px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.power-table td:first-child { text-align: left; color: var(--text-primary); }
+.power-marg-row { background: rgba(255,184,0,0.08); }
+.power-dot { display: inline-block; width: 7px; height: 7px; border-radius: 1px; margin-right: 5px; vertical-align: middle; }
+.power-spark { display: flex; gap: 10px; align-items: center; }
+.power-spark label { display: flex; flex-direction: column; font-size: 8px; text-transform: uppercase; color: var(--text-dim); }
+.power-spark input { width: 54px; background: var(--bg-input); border: 1px solid var(--border); color: var(--text-body); font-family: inherit; font-size: 11px; padding: 3px 5px; margin-top: 2px; }
+.power-spark-out { display: flex; gap: 16px; }
+.power-spark-out span:last-child { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.power-hint { font-size: 9px; color: var(--text-dim); margin: 4px 0; line-height: 1.4; }

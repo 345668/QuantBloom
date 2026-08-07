@@ -43,6 +43,7 @@ import CustomIndicatorPanel from './components/CustomIndicatorPanel.jsx';
 import TVMPanel from './components/TVMPanel.jsx';
 import ModelLabPanel from './components/ModelLabPanel.jsx';
 import PanelMaximizer from './components/PanelMaximizer.jsx';
+import PowerDeskPanel from './components/PowerDeskPanel.jsx';
 
 function Dashboard() {
   const { state, dispatch } = useDashboard();
@@ -173,6 +174,11 @@ function Dashboard() {
         <OptimizerPanel />
         <DCFPanel />
         <TVMPanel />
+      </div>
+
+      {/* Row 8a: Power markets desk */}
+      <div className="dashboard-row row-2col">
+        <PowerDeskPanel />
       </div>
 
       {/* Row 8b: Custom indicator editor */}
