@@ -2554,3 +2554,9 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
 .twonode-stats { display: flex; justify-content: space-between; gap: 8px; margin-top: 4px; }
 .twonode-stats > div { display: flex; flex-direction: column; }
 .twonode-stats span:last-child { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
+
+/* --- Power Desk: duck curve --- */
+.duck-demand { stroke: var(--accent-neutral); stroke-width: 1.5; }
+.duck-renew { stroke: var(--accent-up); stroke-width: 1.5; opacity: 0.8; }
+.duck-net { stroke: var(--accent-blue); stroke-width: 1.5; stroke-dasharray: 3 2; }
+.duck-price { stroke: var(--accent-down); stroke-width: 1.5; }

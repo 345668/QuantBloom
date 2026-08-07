@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react';
 import {
   buildStack, meritOrderDispatch, sparkSpread, darkSpread, effectiveHeatRate, twoNodeLMP,
+  plantDailyPnl, breakevenPowerPrice, hrcoValueMC,
+  stylizedDailyProfile, netDemandCurve, hourlyClearingPrices, peakOffPeak, scarcityAdder,
 } from '../../charting/power.js';
 
 const FUEL_COLOR = {
@@ -53,17 +55,23 @@ export default function PowerDeskPanel() {
 
   return (
     <div className="panel power-panel">
-      <h3 className="panel-title">Power Desk <span className="panel-badge">{tab === 'dispatch' ? 'merit order' : 'congestion'}</span></h3>
+      <h3 className="panel-title">Power Desk <span className="panel-badge">{{ dispatch: 'merit order', congestion: 'congestion', plant: 'plant P&L', duck: 'duck curve' }[tab]}</span></h3>
 
       <div className="panel-tabs">
         <button className={`tab-btn ${tab === 'dispatch' ? 'active' : ''}`} onClick={() => setTab('dispatch')}>Dispatch</button>
-        <button className={`tab-btn ${tab === 'congestion' ? 'active' : ''}`} onClick={() => setTab('congestion')}>Congestion (LMP)</button>
+        <button className={`tab-btn ${tab === 'congestion' ? 'active' : ''}`} onClick={() => setTab('congestion')}>Congestion</button>
+        <button className={`tab-btn ${tab === 'plant' ? 'active' : ''}`} onClick={() => setTab('plant')}>Plant / HRCO</button>
+        <button className={`tab-btn ${tab === 'duck' ? 'active' : ''}`} onClick={() => setTab('duck')}>Duck curve</button>
       </div>
 
-      {tab === 'congestion' ? (
+      {tab === 'congestion' && (
         <TwoNodeView node={node} costA={costA} setCostA={setCostA} costB={costB} setCostB={setCostB}
           demA={demA} setDemA={setDemA} lineLimit={lineLimit} setLineLimit={setLineLimit} />
-      ) : (
+      )}
+      {tab === 'plant' && <PlantView gasPrice={gasPrice} />}
+      {tab === 'duck' && <DuckView gasPrice={gasPrice} coalPrice={coalPrice} />}
+
+      {tab === 'dispatch' && (
       <>
       <div className="power-inputs">
         <label>Gas $/MMBtu<input type="number" step="0.25" value={gasPrice} onChange={e => setGasPrice(+e.target.value || 0)} /></label>
@@ -195,6 +203,137 @@ function TwoNodeView({ node, costA, setCostA, costB, setCostB, demA, setDemA, li
       <p className="model-note">
         Reproduces the two-node example from "Power 2026: Electricity Pricing in the
         Age of AI". A teaching model, not a live grid.
+      </p>
+    </div>
+  );
+}
+
+/** Plant economics + heat-rate call option (P3). */
+function PlantView({ gasPrice }) {
+  const [capacity, setCapacity] = useState(500);
+  const [heatRate, setHeatRate] = useState(7);
+  const [powerPrice, setPowerPrice] = useState(50);
+  const [hours, setHours] = useState(16);
+  const [powerVol, setPowerVol] = useState(45);
+  const [corr, setCorr] = useState(30);
+
+  const pnl = useMemo(() => plantDailyPnl({ capacityMW: capacity, heatRate, gasPrice, powerPrice, hours }),
+    [capacity, heatRate, gasPrice, powerPrice, hours]);
+  const breakeven = breakevenPowerPrice(heatRate, gasPrice);
+  const hrco = useMemo(() => hrcoValueMC({
+    capacityMW: capacity, heatRate, powerPrice, gasPrice,
+    powerVol: powerVol / 100, gasVol: 0.3, corr: corr / 100, hours, days: 21, sims: 4000, seed: 11,
+  }), [capacity, heatRate, powerPrice, gasPrice, powerVol, corr, hours]);
+
+  return (
+    <div>
+      <div className="power-inputs">
+        <label>Capacity MW<input type="number" value={capacity} onChange={e => setCapacity(+e.target.value || 0)} /></label>
+        <label>Heat rate<input type="number" step="0.5" value={heatRate} onChange={e => setHeatRate(+e.target.value || 0)} /></label>
+        <label>Power $/MWh<input type="number" value={powerPrice} onChange={e => setPowerPrice(+e.target.value || 0)} /></label>
+        <label>Run hours/day<input type="number" value={hours} onChange={e => setHours(+e.target.value || 0)} /></label>
+        <label>Power vol %<input type="number" value={powerVol} onChange={e => setPowerVol(+e.target.value || 0)} /></label>
+        <label>Power/gas corr %<input type="number" value={corr} onChange={e => setCorr(+e.target.value || 0)} /></label>
+      </div>
+
+      <div className="power-clearing">
+        <div>
+          <span className="power-label">Daily gross margin</span>
+          <span className={`power-price ${pnl.grossMargin >= 0 ? '' : 'negative'}`}>{money(pnl.grossMargin)}</span>
+          <span className="power-unit">/day @ ${powerPrice}, gas ${gasPrice}</span>
+        </div>
+      </div>
+      <div className="twonode-stats">
+        <div><span className="power-label">Spark</span><span className={pnl.sparkPerMWh >= 0 ? 'positive' : 'negative'}>{money(pnl.sparkPerMWh)}</span></div>
+        <div><span className="power-label">Breakeven power</span><span>{money(breakeven)}</span></div>
+        <div><span className="power-label">Revenue/day</span><span>{money(pnl.revenue)}</span></div>
+      </div>
+
+      <h4 className="sub-title">Heat-rate call option (21-day, MC)</h4>
+      <div className="twonode-stats">
+        <div><span className="power-label">Option value</span><span className="positive">{money(hrco.value)}</span></div>
+        <div><span className="power-label">Intrinsic</span><span>{money(hrco.intrinsic)}</span></div>
+        <div><span className="power-label">Time premium</span><span className="positive">{money(hrco.optionPremium)}</span></div>
+      </div>
+      <p className="power-hint">
+        The HRCO pays the positive spark day by day, so a plant owner sells it for
+        a fixed monthly cash flow (to underwrite a loan). Value ≥ intrinsic by
+        optionality; it rises with volatility and falls as power &amp; gas co-move.
+      </p>
+      <p className="model-note">
+        Plant economics &amp; heat-rate call option from "Power 2026". Monte-Carlo on
+        modelled lognormal prices — illustrative, not a quoted market.
+      </p>
+    </div>
+  );
+}
+
+/** Duck curve: demand, renewables, net demand and the resulting price shape (P4). */
+function DuckView({ gasPrice, coalPrice }) {
+  const [solarCap, setSolarCap] = useState(1600);
+  const [voll, setVoll] = useState(5000);
+  const [plol, setPlol] = useState(2);
+
+  const { curve, prices } = useMemo(() => {
+    const prof = stylizedDailyProfile({ solarCap });
+    const renew = prof.solar.map((s, i) => s + prof.wind[i]);
+    const curve = netDemandCurve(prof.demand, renew);
+    const stack = buildStack({ gasPrice, coalPrice });
+    return { curve, prices: hourlyClearingPrices(curve, stack) };
+  }, [solarCap, gasPrice, coalPrice]);
+
+  const strips = peakOffPeak(prices);
+  const adder = scarcityAdder(voll, plol / 100);
+
+  // Geometry
+  const W = 320, H = 120;
+  const maxDemand = Math.max(...curve.map(c => c.demand)) * 1.05;
+  const maxPrice = Math.max(...prices, 1) * 1.1;
+  const xOf = h => (h / 23) * W;
+  const yDem = v => H - (v / maxDemand) * H;
+  const yPrc = v => H - (v / maxPrice) * H;
+  const path = (sel, y) => curve.map((c, i) => `${i === 0 ? 'M' : 'L'}${xOf(c.hour).toFixed(1)},${y(sel(c)).toFixed(1)}`).join(' ');
+
+  return (
+    <div>
+      <div className="power-demand">
+        <span>Solar capacity {solarCap} MW</span>
+        <input type="range" min="0" max="3000" step="100" value={solarCap} onChange={e => setSolarCap(+e.target.value)} />
+      </div>
+
+      <svg className="power-stack" viewBox={`0 0 ${W} ${H + 14}`} width="100%">
+        <path d={path(c => c.demand, yDem)} className="duck-demand" fill="none" />
+        <path d={path(c => c.renewables, yDem)} className="duck-renew" fill="none" />
+        <path d={path(c => c.net, yDem)} className="duck-net" fill="none" />
+        <text x="2" y="10" className="power-axis">demand ▬ renewables ▬ net ▬</text>
+        <text x="2" y={H + 12} className="power-axis">0h</text>
+        <text x={W - 20} y={H + 12} className="power-axis">23h</text>
+      </svg>
+      <svg className="power-stack" viewBox={`0 0 ${W} ${H / 2 + 14}`} width="100%" style={{ height: 70 }}>
+        <path d={curve.map((c, i) => `${i === 0 ? 'M' : 'L'}${xOf(c.hour).toFixed(1)},${(H / 2 - (prices[i] / maxPrice) * (H / 2)).toFixed(1)}`).join(' ')} className="duck-price" fill="none" />
+        <text x="2" y="10" className="power-axis">LMP $/MWh (evening spike)</text>
+      </svg>
+
+      <div className="twonode-stats">
+        <div><span className="power-label">On-peak strip</span><span>{money(strips.peak)}</span></div>
+        <div><span className="power-label">Off-peak strip</span><span>{money(strips.offPeak)}</span></div>
+        <div><span className="power-label">Midday LMP</span><span>{money(prices[13])}</span></div>
+      </div>
+
+      <h4 className="sub-title">Energy-only scarcity adder</h4>
+      <div className="power-spark">
+        <label>VOLL $/MWh<input type="number" value={voll} onChange={e => setVoll(+e.target.value || 0)} /></label>
+        <label>P(lost load) %<input type="number" step="0.5" value={plol} onChange={e => setPlol(+e.target.value || 0)} /></label>
+        <div className="power-spark-out"><div><span className="power-label">Price adder</span><span className="negative">{money(adder)}/MWh</span></div></div>
+      </div>
+      <p className="power-hint">
+        High solar deepens the midday trough (the duck's belly) and forces less
+        efficient units on in the evening — a steeper price curve. Energy-only
+        markets add VOLL × P(lost load) on top when supply runs short.
+      </p>
+      <p className="model-note">
+        Stylised daily profile from "Power 2026" — an illustration of the duck curve,
+        not live grid data.
       </p>
     </div>
   );

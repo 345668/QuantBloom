@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {
   marginalCostOfThermal, meritOrderDispatch, sparkSpread, darkSpread,
   effectiveHeatRate, buildStack, twoNodeLMP,
+  plantDailyPnl, breakevenPowerPrice, hrcoValueMC, forwardStrip, peakOffPeak,
+  stylizedDailyProfile, netDemandCurve, hourlyClearingPrices, scarcityAdder,
 } from '../charting/power.js';
 
 const close = (a, b, tol = 1e-6) => assert.ok(Math.abs(a - b) <= tol, `${a} vs ${b}`);
@@ -168,4 +170,101 @@ test('direction flips when node A is the cheaper one', () => {
   assert.equal(r.lmpA, 10);
   assert.equal(r.lmpB, 100);     // B congested/importing
   assert.equal(r.congested, true);
+});
+
+// --- P3: plant economics --------------------------------------------------
+
+test('plantDailyPnl computes revenue, fuel and gross margin', () => {
+  // 100 MW, 16 h, $60 power, HR 7, gas $3.5 -> fuel $24.5/MWh, spark $35.5.
+  const p = plantDailyPnl({ capacityMW: 100, heatRate: 7, gasPrice: 3.5, powerPrice: 60, hours: 16 });
+  close(p.mwh, 1600);
+  close(p.revenue, 96000);            // matches the paper's ~$96k/day
+  close(p.fuelCost, 7 * 3.5 * 1600);
+  close(p.sparkPerMWh, 35.5);
+  close(p.grossMargin, 35.5 * 1600);
+});
+
+test('breakeven power price is heat rate times gas plus vom', () => {
+  close(breakevenPowerPrice(7, 3.5), 24.5);
+  close(breakevenPowerPrice(7, 3.5, 2), 26.5);
+});
+
+// --- P3: heat-rate call option --------------------------------------------
+
+const hrco = (over = {}) => hrcoValueMC({
+  capacityMW: 100, heatRate: 7, powerPrice: 40, gasPrice: 3.5,
+  powerVol: 0.4, gasVol: 0.3, corr: 0.3, hours: 16, days: 21, sims: 4000, seed: 7, ...over,
+});
+
+test('HRCO value is at least its intrinsic value (optionality is non-negative)', () => {
+  const r = hrco();
+  assert.ok(r.value >= r.intrinsic - 1);
+  assert.ok(r.optionPremium >= -1);
+});
+
+test('an at-the-money HRCO has zero intrinsic but positive value', () => {
+  const atm = hrco({ powerPrice: 24.5 }); // spark forward = 40? no: 7*3.5=24.5 -> spark 0
+  assert.equal(atm.intrinsic, 0);
+  assert.ok(atm.value > 0, `expected positive time value, got ${atm.value}`);
+});
+
+test('HRCO value rises with power volatility', () => {
+  assert.ok(hrco({ powerVol: 0.6 }).value > hrco({ powerVol: 0.2 }).value);
+});
+
+test('HRCO value falls as power and gas become more correlated (tighter spread)', () => {
+  assert.ok(hrco({ corr: 0.1 }).value > hrco({ corr: 0.9 }).value);
+});
+
+test('HRCO is deterministic for a fixed seed', () => {
+  assert.equal(hrco().value, hrco().value);
+});
+
+// --- P3: forward strips ---------------------------------------------------
+
+test('forwardStrip is the mean price over the period', () => {
+  close(forwardStrip([30, 40, 50]), 40);
+  assert.equal(forwardStrip([]), 0);
+});
+
+test('peakOffPeak splits by hour of day', () => {
+  const hourly = Array.from({ length: 24 }, (_, h) => (h >= 7 && h < 23 ? 100 : 20));
+  const r = peakOffPeak(hourly);
+  close(r.peak, 100);
+  close(r.offPeak, 20);
+});
+
+// --- P4: duck curve & scarcity --------------------------------------------
+
+test('stylizedDailyProfile returns 24h of demand/solar/wind with a midday solar peak', () => {
+  const { demand, solar, wind } = stylizedDailyProfile();
+  assert.equal(demand.length, 24);
+  assert.ok(solar[12] > solar[0]);       // solar peaks midday, zero at midnight
+  assert.equal(solar[0], 0);
+  assert.ok(Math.max(...wind) > 0);
+});
+
+test('net demand = demand − renewables and dips midday (the duck belly)', () => {
+  const { demand, solar, wind } = stylizedDailyProfile();
+  const renew = solar.map((s, i) => s + wind[i]);
+  const nd = netDemandCurve(demand, renew);
+  assert.equal(nd.length, 24);
+  nd.forEach((x, i) => close(x.net, Math.max(demand[i] - renew[i], 0)));
+  // midday net demand (solar high) below evening net demand (the duck's neck).
+  assert.ok(nd[13].net < nd[19].net);
+});
+
+test('hourly clearing prices are higher in the evening than midday (price spike)', () => {
+  const { demand, solar, wind } = stylizedDailyProfile();
+  const nd = netDemandCurve(demand, solar.map((s, i) => s + wind[i]));
+  const stack = buildStack({ gasPrice: 3.5 });
+  const prices = hourlyClearingPrices(nd, stack);
+  assert.equal(prices.length, 24);
+  assert.ok(prices[19] >= prices[13]); // evening >= midday
+});
+
+test('scarcity adder is VOLL times the probability of lost load, clamped', () => {
+  close(scarcityAdder(5000, 0.02), 100);
+  close(scarcityAdder(5000, 1.5), 5000);  // probability clamped to 1
+  close(scarcityAdder(5000, -0.1), 0);
 });
