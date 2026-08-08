@@ -2560,3 +2560,23 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
 .duck-renew { stroke: var(--accent-up); stroke-width: 1.5; opacity: 0.8; }
 .duck-net { stroke: var(--accent-blue); stroke-width: 1.5; stroke-dasharray: 3 2; }
 .duck-price { stroke: var(--accent-down); stroke-width: 1.5; }
+
+/* --- Solo / popped-out panel window --- */
+body.solo-mode .nav-bar, body.solo-mode .ticker-bar { display: none !important; }
+body.solo-mode .terminal { padding: 0; }
+.solo-bar {
+  position: sticky; top: 0; z-index: 50; display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 12px; background: var(--bg-panel); border-bottom: 1px solid var(--border-bright);
+  font-size: 11px; color: var(--accent-neutral); letter-spacing: 0.05em; font-weight: 700;
+}
+.solo-bar button { font-size: 10px; color: var(--accent-down); border: 1px solid var(--accent-down); padding: 3px 8px; }
+.solo-focus { width: 100% !important; }
+body.solo-mode .dashboard-row.row-hero { display: block; }
+
+/* --- Help / shortcuts panel --- */
+.shortcuts-table { width: 100%; border-collapse: collapse; font-size: 11px; margin-bottom: 6px; }
+.shortcuts-table td { padding: 4px 6px; vertical-align: top; border-bottom: 1px solid var(--border); }
+.sc-kbd { font-family: inherit; font-size: 10px; background: var(--bg-input); border: 1px solid var(--border-bright); border-radius: 3px; padding: 2px 6px; color: var(--accent-neutral); white-space: nowrap; }
+.sc-desc { color: var(--text-secondary); }
+.sc-tips { margin: 4px 0 6px; padding-left: 16px; font-size: 10px; color: var(--text-secondary); line-height: 1.5; }
+.sc-tips li { margin-bottom: 3px; }

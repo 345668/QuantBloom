@@ -1,49 +1,55 @@
 import { useEffect, useRef, useState } from 'react';
 
 /**
- * Pop any panel out to (near) full-screen with a keyboard shortcut — no changes
- * to the ~40 individual panels. It operates on the shared `.panel` DOM class:
+ * Pop any panel out into its own browser window with a keyboard shortcut — no
+ * changes to the ~40 individual panels.
  *
- *   Ctrl+Shift+M  → maximise the panel currently under the mouse cursor
- *   Esc / ✕ / backdrop click → restore
+ *   Ctrl/Cmd+Shift+M  → open the panel under the cursor in a new window
  *
- * Because it toggles a CSS class on the existing DOM node, the panel keeps all
- * its React state and live data while enlarged.
+ * It opens a new window at ?solo=<panel index>; the fresh app instance there
+ * focuses that one panel full-window (SoloFocus), so the popped-out panel is
+ * fully live and interactive with its own data. If the browser blocks the
+ * pop-up, it falls back to an in-place full-screen overlay (Esc to restore).
  */
 export default function PanelMaximizer() {
   const mouse = useRef({ x: 0, y: 0 });
-  const [maximized, setMaximized] = useState(null); // the maximized .panel element
+  const [inPlace, setInPlace] = useState(null);
   const [hintSeen, setHintSeen] = useState(() => {
-    try { return localStorage.getItem('qb_maximize_hint') === '1'; } catch { return false; }
+    try { return localStorage.getItem('qb_popout_hint') === '1'; } catch { return false; }
   });
 
   const restore = () => {
-    if (maximized) {
-      maximized.classList.remove('panel-maximized');
-      setMaximized(null);
-    }
+    if (inPlace) { inPlace.classList.remove('panel-maximized'); setInPlace(null); }
   };
 
-  const maximizeUnderCursor = () => {
+  const popOut = () => {
     const el = document.elementFromPoint(mouse.current.x, mouse.current.y);
     const panel = el?.closest?.('.panel');
     if (!panel) return;
-    // Toggle: if this one is already maximized, restore it.
-    if (panel.classList.contains('panel-maximized')) { restore(); return; }
-    if (maximized) maximized.classList.remove('panel-maximized');
-    panel.classList.add('panel-maximized');
-    setMaximized(panel);
-    if (!hintSeen) { try { localStorage.setItem('qb_maximize_hint', '1'); } catch {} setHintSeen(true); }
+    if (!hintSeen) { try { localStorage.setItem('qb_popout_hint', '1'); } catch {} setHintSeen(true); }
+
+    const panels = [...document.querySelectorAll('.panel')];
+    const idx = panels.indexOf(panel);
+    const title = (panel.querySelector('.panel-title')?.firstChild?.textContent || 'Panel').trim();
+    const url = `${location.pathname}?solo=${idx}&t=${encodeURIComponent(title)}`;
+    const win = window.open(url, `qb_panel_${idx}`, 'popup,width=1200,height=820,noopener=no');
+
+    if (!win) {
+      // Pop-up blocked → in-place full-screen fallback.
+      if (panel.classList.contains('panel-maximized')) { restore(); return; }
+      if (inPlace) inPlace.classList.remove('panel-maximized');
+      panel.classList.add('panel-maximized');
+      setInPlace(panel);
+    }
   };
 
   useEffect(() => {
     const onMove = e => { mouse.current = { x: e.clientX, y: e.clientY }; };
     const onKey = e => {
-      // Ctrl+Shift+M (or Cmd+Shift+M on macOS) toggles the panel under the cursor.
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'M' || e.key === 'm')) {
         e.preventDefault();
-        maximizeUnderCursor();
-      } else if (e.key === 'Escape' && maximized) {
+        popOut();
+      } else if (e.key === 'Escape' && inPlace) {
         restore();
       }
     };
@@ -52,23 +58,16 @@ export default function PanelMaximizer() {
     return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('keydown', onKey); };
   });
 
-  // Repaint charts inside the panel after it resizes (lightweight-charts et al.
-  // listen to window resize / their own ResizeObserver).
   useEffect(() => {
-    if (maximized) {
-      const t = setTimeout(() => window.dispatchEvent(new Event('resize')), 60);
-      return () => clearTimeout(t);
-    }
-  }, [maximized]);
+    if (inPlace) { const t = setTimeout(() => window.dispatchEvent(new Event('resize')), 60); return () => clearTimeout(t); }
+  }, [inPlace]);
 
   return (
     <>
-      {maximized && <div className="panel-maximize-backdrop" onClick={restore} />}
-      {maximized && (
-        <button className="panel-maximize-close" onClick={restore} title="Restore (Esc)">✕ close</button>
-      )}
+      {inPlace && <div className="panel-maximize-backdrop" onClick={restore} />}
+      {inPlace && <button className="panel-maximize-close" onClick={restore} title="Restore (Esc)">✕ close</button>}
       {!hintSeen && (
-        <div className="panel-maximize-hint">⤢ Ctrl+Shift+M expands the panel under your cursor</div>
+        <div className="panel-maximize-hint">⤢ Ctrl+Shift+M pops the panel under your cursor into a new window</div>
       )}
     </>
   );

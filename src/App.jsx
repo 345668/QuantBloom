@@ -44,6 +44,8 @@ import TVMPanel from './components/TVMPanel.jsx';
 import ModelLabPanel from './components/ModelLabPanel.jsx';
 import PanelMaximizer from './components/PanelMaximizer.jsx';
 import PowerDeskPanel from './components/PowerDeskPanel.jsx';
+import SoloFocus from './components/SoloFocus.jsx';
+import ShortcutsPanel from './components/ShortcutsPanel.jsx';
 
 function Dashboard() {
   const { state, dispatch } = useDashboard();
@@ -181,9 +183,10 @@ function Dashboard() {
         <PowerDeskPanel />
       </div>
 
-      {/* Row 8b: Custom indicator editor */}
+      {/* Row 8b: Custom indicator editor + Help */}
       <div className="dashboard-row row-2col">
         <CustomIndicatorPanel />
+        <ShortcutsPanel />
       </div>
 
       {/* Row 9: Financials + Options */}
@@ -194,6 +197,9 @@ function Dashboard() {
 
       {/* Watchlist Modal */}
       {showWatchlist && <WatchlistModal onClose={() => setShowWatchlist(false)} />}
+
+      {/* Solo focus for popped-out windows (?solo=) */}
+      <SoloFocus />
 
       {/* Global panel pop-out (Ctrl+Shift+M) */}
       <PanelMaximizer />
