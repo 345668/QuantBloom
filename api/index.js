@@ -3278,6 +3278,7 @@ function verdictFor(dsr, pbo) {
 }
 
 // server.js
+import { neon } from "@neondatabase/serverless";
 import { existsSync as existsSync2 } from "node:fs";
 import { dirname as dirname2, join as join2 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -5734,6 +5735,36 @@ if (existsSync2(join2(distDir, "index.html"))) {
   app.use(express.static(distDir));
   app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(join2(distDir, "index.html")));
 }
+var _neonSql = null;
+function neonSql() {
+  if (_neonSql) return _neonSql;
+  if (!process.env.DATABASE_URL) return null;
+  _neonSql = neon(process.env.DATABASE_URL);
+  return _neonSql;
+}
+app.post("/api/v1/auth/sync", async (req, res) => {
+  const supaUrl = process.env.SUPABASE_URL;
+  const supaKey = process.env.SUPABASE_ANON_KEY;
+  const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  if (!supaUrl || !supaKey) return res.json({ ok: false, skipped: "Supabase not configured" });
+  if (!token) return res.status(401).json({ ok: false, error: "Missing bearer token" });
+  try {
+    const r = await fetch2(`${supaUrl}/auth/v1/user`, { headers: { apikey: supaKey, Authorization: `Bearer ${token}` } });
+    if (!r.ok) return res.status(401).json({ ok: false, error: "Invalid token" });
+    const u = await r.json();
+    const sql = neonSql();
+    if (!sql) return res.json({ ok: true, mirrored: false, note: "Neon (DATABASE_URL) not configured", user: { id: u.id, email: u.email } });
+    await sql`CREATE TABLE IF NOT EXISTS app_users (
+      id uuid PRIMARY KEY, email text, created_at timestamptz, last_seen timestamptz DEFAULT now()
+    )`;
+    await sql`INSERT INTO app_users (id, email, created_at, last_seen)
+      VALUES (${u.id}, ${u.email}, ${u.created_at || null}, now())
+      ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, last_seen = now()`;
+    res.json({ ok: true, mirrored: true, user: { id: u.id, email: u.email } });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 var server_default = app;
 var isDirectRun = process.argv[1] && (process.argv[1].endsWith("server.js") || process.argv[1].endsWith("server"));
 if (isDirectRun) {

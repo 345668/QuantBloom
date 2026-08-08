@@ -12,6 +12,7 @@ import * as broker from './bot/alpaca.js';
 import { computeTechnical } from './bot/indicators.js';
 import { runBacktest, walkForward, sweepStrategies } from './bot/backtest.js';
 import * as models from './bot/model-registry.js';
+import { neon } from '@neondatabase/serverless';
 
 dotenv.config();
 
@@ -2964,6 +2965,49 @@ if (existsSync(join(distDir, 'index.html'))) {
   // SPA fallback: any non-API path returns index.html for client routing.
   app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(join(distDir, 'index.html')));
 }
+
+// ---------------------------------------------------------------------------
+// Auth sync: validate a Supabase access token and mirror the user into Neon.
+// Login itself happens client-side against Supabase; this endpoint keeps a
+// server-side copy of the profile in Postgres (Neon). Both are optional — with
+// neither configured the terminal runs open, so this degrades to a no-op.
+// ---------------------------------------------------------------------------
+let _neonSql = null;
+function neonSql() {
+  if (_neonSql) return _neonSql;
+  if (!process.env.DATABASE_URL) return null;
+  _neonSql = neon(process.env.DATABASE_URL);
+  return _neonSql;
+}
+
+app.post('/api/v1/auth/sync', async (req, res) => {
+  const supaUrl = process.env.SUPABASE_URL;
+  const supaKey = process.env.SUPABASE_ANON_KEY;
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!supaUrl || !supaKey) return res.json({ ok: false, skipped: 'Supabase not configured' });
+  if (!token) return res.status(401).json({ ok: false, error: 'Missing bearer token' });
+
+  try {
+    // Validate the token with Supabase (never trust the client's claim of who it is).
+    const r = await fetch(`${supaUrl}/auth/v1/user`, { headers: { apikey: supaKey, Authorization: `Bearer ${token}` } });
+    if (!r.ok) return res.status(401).json({ ok: false, error: 'Invalid token' });
+    const u = await r.json();
+
+    const sql = neonSql();
+    if (!sql) return res.json({ ok: true, mirrored: false, note: 'Neon (DATABASE_URL) not configured', user: { id: u.id, email: u.email } });
+
+    await sql`CREATE TABLE IF NOT EXISTS app_users (
+      id uuid PRIMARY KEY, email text, created_at timestamptz, last_seen timestamptz DEFAULT now()
+    )`;
+    await sql`INSERT INTO app_users (id, email, created_at, last_seen)
+      VALUES (${u.id}, ${u.email}, ${u.created_at || null}, now())
+      ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, last_seen = now()`;
+
+    res.json({ ok: true, mirrored: true, user: { id: u.id, email: u.email } });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 // Export for Vercel serverless
 export default app;

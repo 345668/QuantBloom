@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { DashboardProvider, useDashboard } from './context/DashboardContext.jsx';
+import { AuthProvider, useAuth } from './context/AuthContext.jsx';
+import LoginGate from './components/LoginGate.jsx';
 import TickerBar from './components/TickerBar.jsx';
 import WatchlistModal from './components/WatchlistModal.jsx';
 import ChartPanel from './components/ChartPanel.jsx';
@@ -80,6 +82,7 @@ function Dashboard() {
           >
             {state.theme === 'dark' ? 'LIGHT' : 'DARK'}
           </button>
+          <UserBadge />
           <span className="nav-clock">{clock}</span>
         </div>
       </nav>
@@ -207,10 +210,26 @@ function Dashboard() {
   );
 }
 
+function UserBadge() {
+  const { configured, user, signOut } = useAuth();
+  if (!configured) return null;
+  if (!user) return null;
+  return (
+    <span className="user-badge" title={user.email}>
+      <span className="user-email">{user.email}</span>
+      <button className="user-signout" onClick={() => signOut()}>Sign out</button>
+    </span>
+  );
+}
+
 export default function App() {
   return (
-    <DashboardProvider>
-      <Dashboard />
-    </DashboardProvider>
+    <AuthProvider>
+      <LoginGate>
+        <DashboardProvider>
+          <Dashboard />
+        </DashboardProvider>
+      </LoginGate>
+    </AuthProvider>
   );
 }
