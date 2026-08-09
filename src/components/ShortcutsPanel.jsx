@@ -1,6 +1,7 @@
 const SHORTCUTS = [
+  { keys: 'Ctrl / ⌘ + K', desc: 'Command palette — type a ticker to set the active symbol, or a panel name to jump to it' },
   { keys: 'Ctrl / ⌘ + Shift + M', desc: 'Pop the panel under the cursor into its own live window' },
-  { keys: 'Esc', desc: 'Restore a panel (when popped out in-place because the pop-up was blocked)' },
+  { keys: '↑ ↓ / ↵ / Esc', desc: 'In the palette: navigate, run, and close' },
 ];
 
 const TIPS = [
@@ -31,8 +32,8 @@ export default function ShortcutsPanel() {
       </ul>
 
       <p className="model-note">
-        More Bloomberg-style shortcuts (a Ctrl+K command palette, symbol jump) are
-        on the roadmap — see POWER_MARKETS_PLAN.md, Track 3.
+        The command palette (Ctrl+K) is the Bloomberg "TICKER &lt;GO&gt;" pattern:
+        one box to jump anywhere in the terminal.
       </p>
     </div>
   );

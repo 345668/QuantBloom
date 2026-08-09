@@ -48,6 +48,7 @@ import PanelMaximizer from './components/PanelMaximizer.jsx';
 import PowerDeskPanel from './components/PowerDeskPanel.jsx';
 import SoloFocus from './components/SoloFocus.jsx';
 import ShortcutsPanel from './components/ShortcutsPanel.jsx';
+import CommandPalette from './components/CommandPalette.jsx';
 
 function Dashboard() {
   const { state, dispatch } = useDashboard();
@@ -206,6 +207,9 @@ function Dashboard() {
 
       {/* Global panel pop-out (Ctrl+Shift+M) */}
       <PanelMaximizer />
+
+      {/* Command palette (Ctrl+K) */}
+      <CommandPalette />
     </div>
   );
 }
