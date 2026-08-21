@@ -3,18 +3,39 @@
 A Bloomberg-style market terminal that runs locally: live quotes and charting,
 a 122-instrument multi-asset universe, a full quantitative stack (VaR, factor
 exposure, portfolio optimisation, DCF, Black-Scholes options), a paper-trading
-bot with a hard risk gate, and a local model-training lab with a
-validation-gated publish pipeline.
+bot with a hard risk gate, a local model-training lab with a validation-gated
+publish pipeline, and a power/commodities pricing desk.
+
+![The QuantBloom terminal — command bar, cross-asset ticker, and the primary
+chart.](docs/img/hero.png)
+
+> 📄 **Deep dive:** the [**Technical Whitepaper**](docs/QuantBloom-Whitepaper.md)
+> documents the machine-learning pipeline, trading strategies, overfitting
+> guards, and all the maths behind them — with platform snapshots throughout.
 
 - **Front-end** — React 18 + Vite (`src/`)
-- **API** — Express (`server.js`), pure JavaScript, no build step
-- **Analytics & bot** — tested JS modules in `bot/` and the repo root
-  (`blackscholes.js`, `regression.js`, `portfolio-math.js`, `bot/*`)
+- **API** — Express (`server.js`), pure JavaScript
+- **Analytics, ML & bot** — tested JS modules in `bot/`, `charting/`, and the
+  repo root (`blackscholes.js`, `regression.js`, `portfolio-math.js`)
 - **Data** — Yahoo Finance (no key), plus optional FRED / Finnhub / Alpha
   Vantage / Marketaux / NewsAPI
+- **Tested** — 332 unit tests (`npm test`) covering every load-bearing computation
 
-Everything analytical runs in JavaScript, so there is no Python or database
-required to run the app locally.
+Everything analytical runs in JavaScript, so no Python or database is required
+to run the app locally.
+
+## What's inside
+
+| Area | Highlights |
+|------|-----------|
+| **Charting** | 8 chart types (Heikin-Ashi, Renko, Line-Break…), 16-indicator library, volume profile, drawing tools with R:R, bar replay, multi-chart grid, a sandboxed custom-indicator language |
+| **ML signal lab** | 19 point-in-time features (+5 cross-asset), triple-barrier labels, four model families (logistic, gradient-boosted trees, PCA latent-factor, ensemble), a from-scratch Jacobi eigensolver |
+| **Overfitting guards** | Probabilistic & Deflated Sharpe, Probability of Backtest Overfitting (CSCV) — a publish gate that rejects models that don't beat buy-and-hold out of sample |
+| **Backtester** | Event-driven, point-in-time, next-bar-open fills, explicit transaction costs, walk-forward, strategy sweeps |
+| **Trading bot** | Alpaca paper trading, hard risk gate, SL/TP brackets + live trailing stop, kill switch, auto-train, Mistral LLM advisory layer |
+| **Portfolio & valuation** | Mean-variance optimisation, three-method VaR, factor regression, DCF, time-value-of-money (NPV/IRR) |
+| **Power desk** | Merit-order dispatch, two-node LMP & congestion, spark spreads, Monte-Carlo heat-rate options, the duck curve |
+| **UX** | `Ctrl+K` command palette (`TICKER <GO>`), `Ctrl+Shift+M` panel pop-out, optional Supabase login mirrored to Neon |
 
 ---
 
