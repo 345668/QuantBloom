@@ -853,6 +853,13 @@ exactly: 10 MW over a 50 MW line clears both nodes at \$10; 60 MW pins the line
 and decouples to \$100 / \$10 (a \$90 basis); widening the line re-couples the
 price.
 
+![Two-node LMP under congestion: with 60 MW of demand at A and a 50 MW line,
+the line saturates and the prices decouple to \$100 (A) and \$10 (B).](img/power-congestion.png)
+
+*Figure 13. Transmission congestion — the line is pinned at its 50 MW limit, so
+node A's price jumps to its local cost while node B stays cheap. The gap is the
+congestion basis.*
+
 ### 13.3 Spark spreads and the heat-rate call option
 
 The **spark spread** is a gas plant's gross margin,
@@ -875,6 +882,13 @@ Energy-only markets add a **scarcity adder** of VOLL × P(lost load) on top of t
 marginal energy price when supply runs short. Both are provided as interactive,
 clearly-labelled stylised models — QuantBloom has no live ISO/LMP feed, and says
 so.
+
+![The duck curve — demand, renewables and net demand over 24 hours, with the
+resulting evening price spike, on/off-peak strips and a scarcity-adder
+calculator.](img/power-duck.png)
+
+*Figure 14. The duck curve — as solar (green) grows, net demand (blue) develops a
+midday belly and an evening neck, steepening the intraday price shape.*
 
 ---
 
@@ -986,6 +1000,88 @@ unforgiving publish gate.
 
 See the table in Section 2.2. Every listed module has a dedicated test file; the
 full suite is run with `npm test` (`node --test "test/*.test.mjs"`).
+
+### Appendix C — A Worked Example: NVDA Through the Pipeline
+
+To make the abstractions concrete, this appendix traces a single symbol through
+the full research pipeline with the actual numbers the system produces.
+
+**Step 1 — Data.** Five years of daily NVDA candles are pulled from Yahoo (no
+key). With a 200-bar warm-up and a 10-bar label horizon, roughly 1,000 labelled
+rows survive.
+
+**Step 2 — Features.** Each surviving bar becomes a 19-dimensional point-in-time
+vector (Section 5.1). Enabling the cross-asset option (Section 5.2) aligns SPY to
+NVDA's bar times and appends five market-relative features, widening the vector
+to 24 and flagging the model `usesMarket` so the live path knows to supply the
+benchmark.
+
+**Step 3 — Labelling.** Each row is labelled by the triple barrier (Section 5.3):
+$+3\%$ up, $-2\%$ down, 10-bar horizon. The dataset is split temporally, the most
+recent 30% held out and never shuffled.
+
+**Step 4 — Training.** A gradient-boosted model (80 trees, depth 3, learning rate
+0.08, minimum leaf 15) is fit on the training split. It reports split-count
+feature importance; on NVDA the top drivers are typically volume ratio, MACD
+histogram, and short-horizon return.
+
+**Step 5 — Metrics.** On the held-out window, the model reaches a **test AUC of
+about 0.59** with the base features. Adding the cross-asset features lifts a
+high-beta name like NVDA to **~0.56–0.62** depending on the window — genuine but
+modest discrimination. The logistic baseline sits near 0.50; PCA near 0.44–0.52;
+the ensemble lands between its members.
+
+**Step 6 — Out-of-sample backtest.** The model is turned into a strategy
+(`modelStrategy`) and backtested over the test window with point-in-time signals,
+next-bar-open fills, and full costs. The strategy is compared to buy-and-hold; its
+Deflated Sharpe and trade count are computed.
+
+**Step 7 — The gate.** The publish gate (Section 7.5) checks AUC $\ge 0.55$, OOS
+Sharpe $\ge 0.5$, beat buy-and-hold, Deflated Sharpe $\ge 0.90$, $\ge 5$ trades,
+$\ge 60$ rows. On daily NVDA the model **fails** — it does not beat buy-and-hold
+over a bull run in which it is often in cash — and auto-train reports it, honestly,
+as "not worth using." A researcher may still *select* the model for paper testing;
+it simply cannot be *published*.
+
+This is the pipeline working as designed: it produced a model with real (if small)
+discrimination, measured it without look-ahead, corrected for multiple testing,
+and declined to endorse it. Manufacturing a "pass" would require weakening the
+gate — which the system deliberately does not do.
+
+### Appendix D — Panel Gallery
+
+The terminal's 37 panels span data, analytics, execution, and pricing. A
+selection, each captured through the pop-out mechanism:
+
+![Portfolio](img/portfolio.png)
+*Figure 15. Portfolio — positions with live P&L, weights, and source tagging
+(manual vs. bot).*
+
+![Attribution](img/attribution.png)
+*Figure 16. Performance attribution — return contribution by position and sector
+against the benchmark.*
+
+![Options chain](img/options.png)
+*Figure 17. The options chain with Black-Scholes Greeks (delta, gamma, theta,
+vega) and numerically-solved implied volatility.*
+
+![Stock screener](img/screener.png)
+*Figure 18. The stock screener — filtering the universe on fundamental and
+technical criteria.*
+
+![Sector analysis](img/sector.png)
+*Figure 19. Sector analysis — a heat-tiled view of relative sector performance.*
+
+![Yield curve](img/yield-curve.png)
+*Figure 20. The Treasury yield curve from FRED, with key spreads.*
+
+![Stress test](img/stress-test.png)
+*Figure 21. Stress testing — replaying historical crises and custom shocks
+against the current book via beta-adjusted propagation.*
+
+![Cross-asset compare](img/compare.png)
+*Figure 22. Rebased cross-asset comparison — several instruments normalised to a
+common base for relative-performance analysis.*
 
 ### References
 

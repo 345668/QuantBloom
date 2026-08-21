@@ -17,7 +17,11 @@ export default function PowerDeskPanel() {
   const [carbon, setCarbon] = useState(0);
   const [demandPct, setDemandPct] = useState(70);
   const [heatRate, setHeatRate] = useState(7);
-  const [tab, setTab] = useState('dispatch');
+  // Deep-linkable tab: ?ptab=congestion|plant|duck opens that view directly.
+  const [tab, setTab] = useState(() => {
+    const t = new URLSearchParams(window.location.search).get('ptab');
+    return ['dispatch', 'congestion', 'plant', 'duck'].includes(t) ? t : 'dispatch';
+  });
 
   // Two-node congestion inputs (seeded with the paper's A↔B example).
   const [costA, setCostA] = useState(100);
