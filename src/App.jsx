@@ -55,6 +55,7 @@ import SchedulerPanel from './components/SchedulerPanel.jsx';
 import SoloFocus from './components/SoloFocus.jsx';
 import ShortcutsPanel from './components/ShortcutsPanel.jsx';
 import CommandPalette from './components/CommandPalette.jsx';
+import Logo from './components/Logo.jsx';
 
 function Dashboard() {
   const { state, dispatch } = useDashboard();
@@ -79,7 +80,8 @@ function Dashboard() {
       {/* Nav Bar */}
       <nav className="nav-bar">
         <div className="nav-left">
-          <span className="terminal-logo">QUANTBLOOM TERMINAL</span>
+          <Logo variant="full" size={22} className="nav-logo" />
+          <span className="nav-logo-suffix">TERMINAL</span>
           <button className="nav-btn watchlist-btn" onClick={() => setShowWatchlist(true)}>WATCHLIST</button>
         </div>
         <div className="nav-right">

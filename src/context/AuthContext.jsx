@@ -39,7 +39,10 @@ export function AuthProvider({ children }) {
     user: session?.user || null,
     loading,
     signIn: (email, password) => supabase.auth.signInWithPassword({ email, password }),
-    signUp: (email, password) => supabase.auth.signUp({ email, password }),
+    // Optional profile metadata (full name, organisation, reason for access) is
+    // stored on the Supabase user and carried through the Neon mirror.
+    signUp: (email, password, metadata = {}) =>
+      supabase.auth.signUp({ email, password, options: { data: metadata } }),
     signOut: () => supabase.auth.signOut(),
   };
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
