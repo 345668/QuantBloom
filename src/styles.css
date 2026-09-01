@@ -2694,3 +2694,82 @@ body.solo-mode .dashboard-row.row-hero { display: block; }
   font-size: 10px; color: var(--text-dim); font-variant-numeric: tabular-nums;
 }
 .imap-swatch { width: 12px; height: 12px; border-radius: 2px; display: inline-block; margin: 0 2px 0 8px; }
+
+/* ============================================================
+   Mission Control — "SURVIVAL × FIELD"
+   ============================================================ */
+.mission-control { background: #0a0806; }
+body.theme-light .mission-control { background: var(--bg-panel); }
+
+.mc-field { position: relative; border: 1px solid var(--border-bright); border-radius: 3px; overflow: hidden; background: radial-gradient(ellipse at 50% 40%, #17120a 0%, #0a0806 70%); }
+body.theme-light .mc-field { background: radial-gradient(ellipse at 50% 40%, #fff6e8 0%, #f4ede0 70%); }
+.mc-field-head { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 12px; padding: 6px 10px; font-size: 10px; letter-spacing: 0.1em; z-index: 2; pointer-events: none; }
+.mc-field-title { color: var(--text-primary); font-weight: 700; }
+.mc-regime { font-weight: 700; padding: 1px 6px; border-radius: 2px; border: 1px solid var(--border-bright); }
+.mc-regime-calm { color: #ffb300; }
+.mc-regime-caution { color: #ff8c00; }
+.mc-regime-stress { color: #ff4422; border-color: #ff4422; }
+.mc-regime-idle { color: var(--text-dim); }
+.mc-stress { font-variant-numeric: tabular-nums; }
+.mc-field-note { color: var(--text-dim); margin-left: auto; }
+.mc-canvas { display: block; width: 100%; height: 300px; }
+
+.mc-rail { display: grid; grid-template-columns: 1.2fr 1fr 0.9fr 1.1fr 0.9fr 1fr; gap: 6px; margin-top: 6px; }
+@media (max-width: 1100px) { .mc-rail { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 680px) { .mc-rail { grid-template-columns: repeat(2, 1fr); } }
+.mc-cell { border: 1px solid var(--border); border-radius: 3px; padding: 6px; background: var(--bg-secondary); min-height: 120px; }
+.mc-cell-title { font-size: 9px; letter-spacing: 0.12em; color: var(--text-primary); margin-bottom: 6px; opacity: 0.8; }
+.mc-empty { font-size: 10px; color: var(--text-dim); padding: 8px 2px; }
+
+.mc-runlog-list, .mc-pos-list, .mc-ledger-list { display: flex; flex-direction: column; gap: 2px; }
+.mc-log-row { display: grid; grid-template-columns: 42px 1fr auto; gap: 4px; font-size: 10px; font-variant-numeric: tabular-nums; }
+.mc-log-time { color: var(--text-dim); }
+.mc-log-sym { color: var(--text-body); }
+.mc-log-act { font-weight: 700; }
+.act-buy .mc-log-act { color: var(--accent-up); }
+.act-sell .mc-log-act { color: var(--accent-down); }
+.act-hold .mc-log-act, .act-skip .mc-log-act { color: var(--text-dim); }
+
+.mc-pos-row { display: grid; grid-template-columns: 1fr auto auto; gap: 6px; font-size: 10px; font-variant-numeric: tabular-nums; }
+.mc-pos-sym { color: var(--text-body); font-weight: 600; }
+.mc-pos-qty { color: var(--text-secondary); }
+
+.mc-radar { width: 100%; height: 108px; }
+.mc-radar-grid { fill: none; stroke: var(--border-bright); stroke-width: 0.5; }
+.mc-radar-fill { fill: rgba(255,140,0,0.28); stroke: #ff8c00; stroke-width: 1; }
+.mc-radar-label { fill: var(--text-dim); font-size: 6.5px; letter-spacing: 0.06em; }
+
+.mc-heat-grid { display: flex; flex-direction: column; gap: 3px; }
+.mc-heat-row { display: grid; grid-template-columns: 34px 1fr; gap: 4px; align-items: center; }
+.mc-heat-sym { font-size: 9px; color: var(--text-secondary); }
+.mc-heat-cells { display: flex; gap: 1px; }
+.mc-heat-cell { flex: 1; height: 9px; background: #ff8c00; border-radius: 1px; }
+
+.mc-equity-val { font-size: 15px; font-weight: 800; color: var(--text-body); font-variant-numeric: tabular-nums; }
+.mc-spark { width: 100%; height: 34px; margin: 4px 0; }
+.mc-spark-line { fill: none; stroke: #ff8c00; stroke-width: 1.5; }
+.mc-equity-chg { font-size: 10px; font-variant-numeric: tabular-nums; }
+
+.mc-ledger-row { display: flex; justify-content: space-between; gap: 6px; font-size: 10px; }
+.mc-ledger-label { color: var(--text-dim); }
+.mc-ledger-val { color: var(--text-body); font-variant-numeric: tabular-nums; }
+
+.mc-foot { font-size: 9px; color: var(--text-dim); margin-top: 6px; }
+.positive { color: var(--accent-up); }
+.negative { color: var(--accent-down); }
+
+/* ---- diagram polish: field legend, IMAP labels, radar spokes ---- */
+.mc-field-legend { display: flex; align-items: center; gap: 4px; font-size: 9px; color: var(--text-dim); }
+.mc-lg { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin: 0 2px 0 8px; }
+.mc-lg-up { background: rgb(135,230,60); }
+.mc-lg-flat { background: rgb(255,140,20); }
+.mc-lg-down { background: rgb(235,20,20); }
+
+.imap-tickring { fill: none; stroke: var(--border); stroke-width: 0.5; }
+.imap-tick { stroke: var(--text-dim); stroke-width: 0.6; opacity: 0.5; }
+.imap-sector-label { fill: var(--text-body); font-size: 6.5px; font-weight: 700; letter-spacing: 0.05em; pointer-events: none; }
+.imap-dim { opacity: 0.22; transition: opacity 0.12s; }
+.imap-center-kind { fill: var(--text-dim); font-size: 7px; letter-spacing: 0.12em; text-transform: uppercase; }
+
+.mc-radar-spoke { stroke: var(--border-bright); stroke-width: 0.4; }
+.mc-radar-dot { fill: #ffb300; }

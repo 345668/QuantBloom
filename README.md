@@ -36,6 +36,7 @@ to run the app locally.
 | **Portfolio & valuation** | Mean-variance optimisation, three-method VaR, factor regression, DCF, time-value-of-money (NPV/IRR) |
 | **Power desk** | Merit-order dispatch, two-node LMP & congestion, spark spreads, Monte-Carlo heat-rate options, the duck curve |
 | **Bloomberg desk** | World Clocks (WCV), FX dealer grid with bid/ask & spreads (FXGO), radial intraday-return sunburst (IMAP) |
+| **Mission Control** | "SURVIVAL × FIELD" — a regime-coloured market-field visualisation over a live bot operations rail (run log, position book, risk radar, fill heat, equity, ledger) |
 | **UX** | `Ctrl+K` command palette (`TICKER <GO>`), `Ctrl+Shift+M` panel pop-out, optional Supabase login mirrored to Neon |
 
 ---

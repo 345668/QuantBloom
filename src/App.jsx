@@ -49,6 +49,7 @@ import PowerDeskPanel from './components/PowerDeskPanel.jsx';
 import WorldClockPanel from './components/WorldClockPanel.jsx';
 import FxGridPanel from './components/FxGridPanel.jsx';
 import RegionMapPanel from './components/RegionMapPanel.jsx';
+import MissionControlPanel from './components/MissionControlPanel.jsx';
 import SoloFocus from './components/SoloFocus.jsx';
 import ShortcutsPanel from './components/ShortcutsPanel.jsx';
 import CommandPalette from './components/CommandPalette.jsx';
@@ -106,6 +107,11 @@ function Dashboard() {
       {/* Row 1b: Multi-chart grid */}
       <div className="dashboard-row row-1col">
         <MultiChartPanel />
+      </div>
+
+      {/* Row 1c: Mission Control — market field + bot operations rail */}
+      <div className="dashboard-row row-1col">
+        <MissionControlPanel />
       </div>
 
       {/* Row 2: Bot + Backtest + Markets board */}
