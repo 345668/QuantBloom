@@ -2773,3 +2773,31 @@ body.theme-light .mc-field { background: radial-gradient(ellipse at 50% 40%, #ff
 
 .mc-radar-spoke { stroke: var(--border-bright); stroke-width: 0.4; }
 .mc-radar-dot { fill: #ffb300; }
+
+/* ============================================================
+   ASKB — Ask QuantBloom
+   ============================================================ */
+.askb-panel { display: flex; flex-direction: column; }
+.askb-thread { flex: 1; min-height: 140px; max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 4px 0; }
+.askb-intro { color: var(--text-secondary); font-size: 12px; }
+.askb-intro p { margin: 4px 0 10px; }
+.askb-suggests { display: flex; flex-wrap: wrap; gap: 6px; }
+.askb-chip { font-size: 11px; padding: 4px 9px; border: 1px solid var(--border-bright); border-radius: 12px; background: var(--bg-secondary); color: var(--text-body); cursor: pointer; }
+.askb-chip:hover { border-color: var(--text-primary); color: var(--text-primary); }
+.askb-msg { display: flex; flex-direction: column; gap: 2px; font-size: 12px; line-height: 1.45; }
+.askb-role { font-size: 9px; letter-spacing: 0.12em; font-weight: 700; }
+.askb-user .askb-role { color: var(--accent-blue); }
+.askb-askb .askb-role { color: var(--text-primary); }
+.askb-user { align-items: flex-end; }
+.askb-user .askb-text { background: color-mix(in srgb, var(--accent-blue) 12%, transparent); padding: 6px 9px; border-radius: 8px 8px 2px 8px; max-width: 85%; color: var(--text-body); }
+.askb-askb .askb-text { background: var(--bg-secondary); padding: 6px 9px; border-radius: 8px 8px 8px 2px; max-width: 92%; color: var(--text-body); border: 1px solid var(--border); }
+.askb-typing { color: var(--text-dim); font-style: italic; }
+.askb-src { font-size: 8px; letter-spacing: 0.08em; color: var(--text-dim); text-transform: uppercase; }
+.src-llm { color: var(--accent-purple); }
+.src-fallback, .src-budget { color: var(--accent-neutral); }
+.askb-form { display: flex; gap: 6px; margin-top: 8px; }
+.askb-input { flex: 1; background: var(--bg-input); border: 1px solid var(--border-bright); border-radius: 4px; padding: 8px 10px; color: var(--text-body); font-size: 12px; font-family: inherit; }
+.askb-input:focus { outline: none; border-color: var(--text-primary); }
+.askb-send { width: 38px; border: 1px solid var(--border-bright); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary); font-size: 16px; cursor: pointer; }
+.askb-send:disabled { opacity: 0.4; cursor: default; }
+.askb-foot { font-size: 9px; color: var(--text-dim); margin-top: 6px; }

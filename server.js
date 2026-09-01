@@ -8,6 +8,7 @@ import { greeks as bsGreeks, impliedVol, yearsToExpiry } from './blackscholes.js
 import { ols, pValue } from './regression.js';
 import { covariance, efficientFrontier, portfolioVariance, minVariancePortfolio, tangencyPortfolio } from './portfolio-math.js';
 import * as bot from './bot/engine.js';
+import { askQuestion, mistralConfigured } from './bot/mistral.js';
 import * as broker from './bot/alpaca.js';
 import { computeTechnical } from './bot/indicators.js';
 import { runBacktest, walkForward, sweepStrategies } from './bot/backtest.js';
@@ -2767,6 +2768,60 @@ const botFetchBenchmark = async () => yahooCandles('SPY', '1d', '1y').catch(() =
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// POST /api/v1/ask — ASKB "Ask QuantBloom" assistant (read-only).
+// Assembles a compact snapshot of local terminal data for the referenced
+// symbol plus the bot's status, then asks the LLM. Falls back to a
+// deterministic templated summary when no LLM key is configured.
+// ---------------------------------------------------------------------------
+function askExtractSymbol(question, fallback) {
+  const m = (question || '').match(/\b([A-Z]{1,5})\b/g);
+  if (m) {
+    for (const t of m) {
+      if (!['A', 'I', 'THE', 'IS', 'IT', 'MY', 'AI', 'US', 'OK', 'PE', 'EPS'].includes(t)) return t;
+    }
+  }
+  return fallback;
+}
+
+app.post('/api/v1/ask', async (req, res) => {
+  try {
+    const question = String(req.body?.question || '').slice(0, 500);
+    if (!question.trim()) return res.status(400).json({ error: 'question required' });
+    const symbol = (req.body?.symbol ? String(req.body.symbol) : askExtractSymbol(question, 'AAPL')).toUpperCase();
+
+    const [quote, technical] = await Promise.all([
+      yahooQuote(`${symbol}`).catch(() => null),
+      botFetchTechnical(symbol).catch(() => null),
+    ]);
+    const st = bot.getState();
+
+    const lines = [];
+    if (quote) lines.push(`${symbol} price $${quote.price} (${quote.changePercent >= 0 ? '+' : ''}${quote.changePercent?.toFixed(2)}% today), volume ${quote.volume}`);
+    if (technical?.summary) lines.push(`Technical summary: ${technical.summary.overall} (${technical.summary.buy} buy / ${technical.summary.neutral} neutral / ${technical.summary.sell} sell signals)`);
+    if (technical?.oscillators?.rsi14 != null) lines.push(`RSI(14) ${technical.oscillators.rsi14}, MACD hist ${technical.oscillators.macdHist ?? '—'}`);
+    if (technical?.movingAverages?.cross) lines.push(`Moving-average state: ${technical.movingAverages.cross}`);
+    if (technical?.range52w) lines.push(`52-week range position: ${technical.range52w.position}%`);
+    lines.push(`Trading bot: ${st.enabled ? 'ENABLED' : 'idle (off)'}, ${st.brokerConfigured ? 'paper broker connected' : 'no broker'}, orders today ${st.ordersToday ?? 0}${st.halted ? `, HALTED (${st.haltReason})` : ''}`);
+    const context = lines.join('\n');
+
+    const llm = await askQuestion({ question, context });
+    if (llm?.answer) {
+      return res.json({ answer: llm.answer, symbol, source: 'llm', model: llm.model, context: lines });
+    }
+
+    // Deterministic fallback — summarise the assembled facts.
+    const fallback = quote
+      ? `${symbol} is at $${quote.price} (${quote.changePercent >= 0 ? '+' : ''}${quote.changePercent?.toFixed(2)}% today).` +
+        (technical?.summary ? ` Technicals read ${technical.summary.overall.toLowerCase()} (${technical.summary.buy} buy / ${technical.summary.sell} sell signals)${technical?.oscillators?.rsi14 != null ? `, RSI ${technical.oscillators.rsi14}` : ''}.` : '') +
+        ` The trading bot is ${st.enabled ? 'enabled' : 'idle'}.` +
+        (mistralConfigured() ? '' : ' (LLM not configured — this is a data summary; add MISTRAL_API_KEY for natural-language answers.)')
+      : `No live data found for ${symbol}. Try a valid ticker, or check the Markets panel.`;
+    return res.json({ answer: fallback, symbol, source: llm?.budgetExhausted ? 'budget' : 'fallback', context: lines });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/v1/bot/status', async (req, res) => {
   try {
     const state = bot.getState();

@@ -113,6 +113,52 @@ export async function reviewDecision({ symbol, decision, technical, news = [], p
   }
 }
 
+// ---------------------------------------------------------------------------
+// ASKB — general "Ask QuantBloom" assistant.
+//
+// A read-only Q&A helper for the terminal's ASKB panel. It is handed a compact,
+// pre-assembled snapshot of local terminal data (a quote, technicals, the bot's
+// status) and answers questions about it. It has NO tools and NO execution
+// authority — it cannot place trades or change settings; it only explains what
+// the terminal already shows. Shares the same daily budget as the reviewer.
+// ---------------------------------------------------------------------------
+const ASK_SYSTEM = `You are ASKB, the assistant inside the QuantBloom trading terminal. Answer the user's question about markets and their terminal using ONLY the CONTEXT provided. Be concise (2-4 sentences), specific, and numerate. If the context does not contain the answer, say so plainly and suggest which panel would show it. Never give personalised investment advice or tell the user to buy or sell — you explain and inform, you do not recommend trades. Do not invent prices, news, or figures you were not given.`;
+
+/**
+ * Answer a free-form question given a pre-assembled context string.
+ * Returns { answer, model, tokens } or null when the LLM is unavailable — the
+ * caller supplies a deterministic fallback in that case.
+ */
+export async function askQuestion({ question, context }) {
+  if (!mistralConfigured()) return null;
+  resetBudgetIfNewDay();
+  if (budget.calls >= budget.maxCalls) {
+    return { answer: null, budgetExhausted: true };
+  }
+  try {
+    const resp = await fetch('https://api.mistral.ai/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: model(),
+        messages: [
+          { role: 'system', content: ASK_SYSTEM },
+          { role: 'user', content: `CONTEXT:\n${context}\n\nQUESTION: ${question}` },
+        ],
+        temperature: 0.3,
+        max_tokens: 350,
+      }),
+    });
+    budget.calls++;
+    if (!resp.ok) return { answer: null, error: `Mistral error ${resp.status}` };
+    const data = await resp.json();
+    budget.tokens += data.usage?.total_tokens || 0;
+    return { answer: data.choices?.[0]?.message?.content?.trim() || null, model: model(), tokens: data.usage?.total_tokens || 0 };
+  } catch (e) {
+    return { answer: null, error: e.message };
+  }
+}
+
 /**
  * Apply an advisory review to a quantitative decision.
  *
