@@ -1006,16 +1006,20 @@ app.get('/api/v1/forex', async (req, res) => {
     if (cached) return res.json(cached);
 
     const forexSymbols = ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'USDCHF=X', 'AUDUSD=X', 'USDCAD=X', 'NZDUSD=X'];
+    const emSymbols = ['USDMXN=X', 'USDZAR=X', 'USDTRY=X', 'USDBRL=X', 'USDINR=X', 'USDCNH=X'];
     const commoditySymbols = ['GC=F', 'SI=F', 'CL=F', 'NG=F', 'HG=F'];
 
-    const [forexResults, commodityResults] = await Promise.all([
+    const [forexResults, emResults, commodityResults] = await Promise.all([
       Promise.allSettled(forexSymbols.map(s => yahooQuote(s))),
+      Promise.allSettled(emSymbols.map(s => yahooQuote(s))),
       Promise.allSettled(commoditySymbols.map(s => yahooQuote(s))),
     ]);
 
     const nameMap = {
       'EURUSD=X': 'EUR/USD', 'GBPUSD=X': 'GBP/USD', 'USDJPY=X': 'USD/JPY',
       'USDCHF=X': 'USD/CHF', 'AUDUSD=X': 'AUD/USD', 'USDCAD=X': 'USD/CAD', 'NZDUSD=X': 'NZD/USD',
+      'USDMXN=X': 'USD/MXN', 'USDZAR=X': 'USD/ZAR', 'USDTRY=X': 'USD/TRY',
+      'USDBRL=X': 'USD/BRL', 'USDINR=X': 'USD/INR', 'USDCNH=X': 'USD/CNH',
       'GC=F': 'Gold', 'SI=F': 'Silver', 'CL=F': 'Crude Oil WTI', 'NG=F': 'Natural Gas', 'HG=F': 'Copper',
     };
 
@@ -1027,6 +1031,7 @@ app.get('/api/v1/forex', async (req, res) => {
 
     const result = {
       forex: forexResults.map(mapQuote).filter(Boolean),
+      emerging: emResults.map(mapQuote).filter(Boolean),
       commodities: commodityResults.map(mapQuote).filter(Boolean),
     };
 
@@ -2760,6 +2765,8 @@ const botFetchCandles = async (symbol) => yahooCandles(symbol, '1d', '1y').catch
 // SPY as the market benchmark for cross-asset features (1y for the live path).
 const botFetchBenchmark = async () => yahooCandles('SPY', '1d', '1y').catch(() => null);
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 app.get('/api/v1/bot/status', async (req, res) => {
   try {
     const state = bot.getState();
@@ -2831,6 +2838,8 @@ app.post('/api/v1/bot/run', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
 app.post('/api/v1/bot/kill', async (req, res) => {
   try {
     res.json({ ...(await bot.killSwitch()), state: bot.getState() });

@@ -46,6 +46,9 @@ import TVMPanel from './components/TVMPanel.jsx';
 import ModelLabPanel from './components/ModelLabPanel.jsx';
 import PanelMaximizer from './components/PanelMaximizer.jsx';
 import PowerDeskPanel from './components/PowerDeskPanel.jsx';
+import WorldClockPanel from './components/WorldClockPanel.jsx';
+import FxGridPanel from './components/FxGridPanel.jsx';
+import RegionMapPanel from './components/RegionMapPanel.jsx';
 import SoloFocus from './components/SoloFocus.jsx';
 import ShortcutsPanel from './components/ShortcutsPanel.jsx';
 import CommandPalette from './components/CommandPalette.jsx';
@@ -131,6 +134,13 @@ function Dashboard() {
         <IndicesPanel />
         <ForexPanel />
         <CryptoPanel />
+      </div>
+
+      {/* Row 2c: Bloomberg desk — world clocks, FX dealer grid, region map */}
+      <div className="dashboard-row row-3col">
+        <WorldClockPanel />
+        <FxGridPanel />
+        <RegionMapPanel />
       </div>
 
       {/* Row 3: News + Heatmap */}

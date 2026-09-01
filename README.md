@@ -35,6 +35,7 @@ to run the app locally.
 | **Trading bot** | Alpaca paper trading, hard risk gate, SL/TP brackets + live trailing stop, kill switch, auto-train, Mistral LLM advisory layer |
 | **Portfolio & valuation** | Mean-variance optimisation, three-method VaR, factor regression, DCF, time-value-of-money (NPV/IRR) |
 | **Power desk** | Merit-order dispatch, two-node LMP & congestion, spark spreads, Monte-Carlo heat-rate options, the duck curve |
+| **Bloomberg desk** | World Clocks (WCV), FX dealer grid with bid/ask & spreads (FXGO), radial intraday-return sunburst (IMAP) |
 | **UX** | `Ctrl+K` command palette (`TICKER <GO>`), `Ctrl+Shift+M` panel pop-out, optional Supabase login mirrored to Neon |
 
 ---
