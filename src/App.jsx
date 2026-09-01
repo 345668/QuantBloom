@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { DashboardProvider, useDashboard } from './context/DashboardContext.jsx';
+import { AuthProvider, useAuth } from './context/AuthContext.jsx';
+import LoginGate from './components/LoginGate.jsx';
 import TickerBar from './components/TickerBar.jsx';
 import WatchlistModal from './components/WatchlistModal.jsx';
 import ChartPanel from './components/ChartPanel.jsx';
@@ -38,7 +40,22 @@ import StressTestPanel from './components/StressTestPanel.jsx';
 import StrategyBuilder from './components/StrategyBuilder.jsx';
 import BotPanel from './components/BotPanel.jsx';
 import BacktestPanel from './components/BacktestPanel.jsx';
+import MultiChartPanel from './components/MultiChartPanel.jsx';
+import CustomIndicatorPanel from './components/CustomIndicatorPanel.jsx';
+import TVMPanel from './components/TVMPanel.jsx';
 import ModelLabPanel from './components/ModelLabPanel.jsx';
+import PanelMaximizer from './components/PanelMaximizer.jsx';
+import PowerDeskPanel from './components/PowerDeskPanel.jsx';
+import WorldClockPanel from './components/WorldClockPanel.jsx';
+import FxGridPanel from './components/FxGridPanel.jsx';
+import RegionMapPanel from './components/RegionMapPanel.jsx';
+import MissionControlPanel from './components/MissionControlPanel.jsx';
+import AskPanel from './components/AskPanel.jsx';
+import SchedulerPanel from './components/SchedulerPanel.jsx';
+import SoloFocus from './components/SoloFocus.jsx';
+import ShortcutsPanel from './components/ShortcutsPanel.jsx';
+import CommandPalette from './components/CommandPalette.jsx';
+import Logo from './components/Logo.jsx';
 
 function Dashboard() {
   const { state, dispatch } = useDashboard();
@@ -63,7 +80,8 @@ function Dashboard() {
       {/* Nav Bar */}
       <nav className="nav-bar">
         <div className="nav-left">
-          <span className="terminal-logo">QUANTBLOOM TERMINAL</span>
+          <Logo variant="full" size={22} className="nav-logo" />
+          <span className="nav-logo-suffix">TERMINAL</span>
           <button className="nav-btn watchlist-btn" onClick={() => setShowWatchlist(true)}>WATCHLIST</button>
         </div>
         <div className="nav-right">
@@ -73,6 +91,7 @@ function Dashboard() {
           >
             {state.theme === 'dark' ? 'LIGHT' : 'DARK'}
           </button>
+          <UserBadge />
           <span className="nav-clock">{clock}</span>
         </div>
       </nav>
@@ -87,6 +106,22 @@ function Dashboard() {
           <CompanyProfile />
           <AnalystPanel />
         </div>
+      </div>
+
+      {/* Row 1a2: ASKB assistant + tick sequencer */}
+      <div className="dashboard-row row-2col">
+        <AskPanel />
+        <SchedulerPanel />
+      </div>
+
+      {/* Row 1b: Multi-chart grid */}
+      <div className="dashboard-row row-1col">
+        <MultiChartPanel />
+      </div>
+
+      {/* Row 1c: Mission Control — market field + bot operations rail */}
+      <div className="dashboard-row row-1col">
+        <MissionControlPanel />
       </div>
 
       {/* Row 2: Bot + Backtest + Markets board */}
@@ -115,6 +150,13 @@ function Dashboard() {
         <IndicesPanel />
         <ForexPanel />
         <CryptoPanel />
+      </div>
+
+      {/* Row 2c: Bloomberg desk — world clocks, FX dealer grid, region map */}
+      <div className="dashboard-row row-3col">
+        <WorldClockPanel />
+        <FxGridPanel />
+        <RegionMapPanel />
       </div>
 
       {/* Row 3: News + Heatmap */}
@@ -160,9 +202,21 @@ function Dashboard() {
       </div>
 
       {/* Row 8: Attribution + Optimiser + DCF */}
-      <div className="dashboard-row row-2col">
+      <div className="dashboard-row row-3col">
         <OptimizerPanel />
         <DCFPanel />
+        <TVMPanel />
+      </div>
+
+      {/* Row 8a: Power markets desk */}
+      <div className="dashboard-row row-2col">
+        <PowerDeskPanel />
+      </div>
+
+      {/* Row 8b: Custom indicator editor + Help */}
+      <div className="dashboard-row row-2col">
+        <CustomIndicatorPanel />
+        <ShortcutsPanel />
       </div>
 
       {/* Row 9: Financials + Options */}
@@ -173,14 +227,39 @@ function Dashboard() {
 
       {/* Watchlist Modal */}
       {showWatchlist && <WatchlistModal onClose={() => setShowWatchlist(false)} />}
+
+      {/* Solo focus for popped-out windows (?solo=) */}
+      <SoloFocus />
+
+      {/* Global panel pop-out (Ctrl+Shift+M) */}
+      <PanelMaximizer />
+
+      {/* Command palette (Ctrl+K) */}
+      <CommandPalette />
     </div>
+  );
+}
+
+function UserBadge() {
+  const { configured, user, signOut } = useAuth();
+  if (!configured) return null;
+  if (!user) return null;
+  return (
+    <span className="user-badge" title={user.email}>
+      <span className="user-email">{user.email}</span>
+      <button className="user-signout" onClick={() => signOut()}>Sign out</button>
+    </span>
   );
 }
 
 export default function App() {
   return (
-    <DashboardProvider>
-      <Dashboard />
-    </DashboardProvider>
+    <AuthProvider>
+      <LoginGate>
+        <DashboardProvider>
+          <Dashboard />
+        </DashboardProvider>
+      </LoginGate>
+    </AuthProvider>
   );
 }

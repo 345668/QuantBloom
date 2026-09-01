@@ -111,6 +111,36 @@ export async function submitOrder({ symbol, side, qty, type = 'market', timeInFo
   };
 }
 
+/**
+ * Submit a bracket order: a market entry with an attached stop-loss and/or
+ * take-profit that the broker manages server-side, so the exits fire even if
+ * our process is down. Alpaca's order_class is 'bracket' (both legs), 'oto'
+ * (one leg), or plain when neither is set.
+ */
+export async function submitBracketOrder({ symbol, side, qty, stopLoss, takeProfit, timeInForce = 'gtc', clientOrderId }) {
+  const body = {
+    symbol, side, qty: String(qty), type: 'market', time_in_force: timeInForce,
+    ...(clientOrderId ? { client_order_id: clientOrderId } : {}),
+  };
+  if (stopLoss != null && takeProfit != null) {
+    body.order_class = 'bracket';
+    body.stop_loss = { stop_price: String(stopLoss) };
+    body.take_profit = { limit_price: String(takeProfit) };
+  } else if (stopLoss != null) {
+    body.order_class = 'oto';
+    body.stop_loss = { stop_price: String(stopLoss) };
+  } else if (takeProfit != null) {
+    body.order_class = 'oto';
+    body.take_profit = { limit_price: String(takeProfit) };
+  }
+  const o = await alpaca('/orders', { method: 'POST', body: JSON.stringify(body) });
+  return {
+    id: o.id, clientOrderId: o.client_order_id, symbol: o.symbol, side: o.side,
+    qty: parseFloat(o.qty), type: o.type, orderClass: o.order_class, status: o.status,
+    submittedAt: o.submitted_at, legs: (o.legs || []).length,
+  };
+}
+
 export async function cancelAllOrders() {
   try {
     const r = await alpaca('/orders', { method: 'DELETE' });

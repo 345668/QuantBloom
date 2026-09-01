@@ -13,8 +13,9 @@
 // signal the SAME tested backtester and live engine consume.
 // ---------------------------------------------------------------------------
 
-import { featuresAt, FEATURE_NAMES } from './features.js';
-import { predictProbaGBM } from './gbm.js';
+import { featuresAt, FEATURE_NAMES, marketFeaturesAt } from './features.js';
+import { predictProbaGBM, trainGBM } from './gbm.js';
+import { fitPCA, transformPCA, totalExplained } from './pca.js';
 
 const sigmoid = z => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))));
 
@@ -86,9 +87,61 @@ export function trainLogistic(X, y, opts = {}) {
  */
 export function predictProba(model, featureRow) {
   if (model.type === 'gbm') return predictProbaGBM(model, featureRow);
+  // PCA: project the row onto the latent factors, then apply the classifier
+  // trained on those factors (a logistic artifact) — recursion handles it.
+  if (model.type === 'pca') return predictProba(model.classifier, transformPCA(model.pca, featureRow));
+  // Ensemble: average the member probabilities (recursion dispatches each).
+  if (model.type === 'ensemble') {
+    const ps = model.members.map(mem => predictProba(mem, featureRow));
+    return ps.reduce((a, b) => a + b, 0) / ps.length;
+  }
   const s = model.scaler;
   const z = featureRow.reduce((acc, v, j) => acc + ((v - s.means[j]) / s.stds[j]) * model.weights[j], model.bias);
   return sigmoid(z);
+}
+
+/**
+ * Latent-factor model: reduce the features to k principal components (the
+ * "factors"), then predict the label from those components with logistic
+ * regression. The in-app stand-in for the ml4t-models latent-factor family.
+ */
+export function trainPCA(X, y, opts = {}) {
+  const { k = 5, featureNames = FEATURE_NAMES, epochs = 400, lr = 0.1, l2 = 0.01 } = opts;
+  if (!X.length || X.length !== y.length) return null;
+  const pca = fitPCA(X, k);
+  const scores = X.map(row => transformPCA(pca, row));
+  const factorNames = pca.components.map((_, i) => `PC${i + 1}`);
+  const classifier = trainLogistic(scores, y, { epochs, lr, l2, featureNames: factorNames });
+  if (!classifier) return null;
+  return {
+    type: 'pca',
+    pca, classifier,
+    k: pca.k,
+    explainedVariance: pca.explainedVariance,
+    totalExplained: totalExplained(pca),
+    featureNames,
+    trainedOn: X.length,
+  };
+}
+
+/**
+ * Ensemble: train GBM, logistic and PCA members and average their predicted
+ * probabilities. Blending decorrelated errors is a standard way to trade a bit
+ * of each model's bias for lower variance — it usually lands near the best
+ * member and is more robust across regimes. It is not a magic edge: on the same
+ * features it can only recombine what those features already contain, and the
+ * publish gate judges it on the same out-of-sample bar as everything else.
+ */
+export function trainEnsemble(X, y, opts = {}) {
+  const { featureNames = FEATURE_NAMES, k = 5 } = opts;
+  if (!X.length || X.length !== y.length) return null;
+  const members = [
+    trainGBM(X, y, { nEstimators: 80, maxDepth: 3, learningRate: 0.08, minLeaf: 15, featureNames }),
+    trainLogistic(X, y, { epochs: 400, featureNames }),
+    trainPCA(X, y, { k, featureNames }),
+  ].filter(Boolean);
+  if (members.length < 2) return null;
+  return { type: 'ensemble', members, memberTypes: members.map(m => m.type), featureNames, trainedOn: X.length };
 }
 
 /** Classification metrics on a held-out set. */
@@ -141,9 +194,17 @@ function rankAuc(scores, labels) {
  * model's distance from the decision boundary, so a marginal prediction sizes
  * small — the same discipline the rule strategies use.
  */
-export function modelStrategy(model, candles, t, { buyThreshold = 0.55, sellThreshold = 0.45 } = {}) {
-  const feat = featuresAt(candles, t);
+export function modelStrategy(model, candles, t, { buyThreshold = 0.55, sellThreshold = 0.45, benchCloses = null } = {}) {
+  let feat = featuresAt(candles, t);
   if (!feat) return { action: 'HOLD', confidence: 0, rationale: 'Insufficient history' };
+  // If the model was trained with market-relative features, the live vector must
+  // include them too (train/live parity). Without the benchmark, refuse rather
+  // than feed the model a differently-shaped vector.
+  const usesMarket = (model.featureNames?.length || feat.length) > feat.length;
+  if (usesMarket) {
+    if (!benchCloses) return { action: 'HOLD', confidence: 0, rationale: 'Model needs a benchmark series (not supplied)' };
+    feat = feat.concat(marketFeaturesAt(candles, benchCloses, t));
+  }
   const p = predictProba(model, feat);
   if (p >= buyThreshold) return { action: 'BUY', confidence: +((p - 0.5) * 2).toFixed(3), rationale: `Model P(up)=${p.toFixed(2)}` };
   if (p <= sellThreshold) return { action: 'SELL', confidence: +((0.5 - p) * 2).toFixed(3), rationale: `Model P(up)=${p.toFixed(2)}` };

@@ -147,11 +147,18 @@ export default function BotPanel() {
       {/* Decision engine: rule strategies or a trained ML model. */}
       <h4 className="sub-title bot-strat-head">
         <span>Decision engine</span>
-        {!data.activeModel && (
-          <button className="bot-link" onClick={() => setShowStrategies(!showStrategies)}>
-            {showStrategies ? 'hide' : 'configure'}
+        <span className="bot-head-actions">
+          <button className="bot-link" disabled={busy === 'autotrain'}
+            title="Train a model on every watchlist symbol and auto-select the best"
+            onClick={() => act('autotrain', () => post('/api/v1/bot/autotrain', { modelType: 'gbm' }))}>
+            {busy === 'autotrain' ? 'training…' : 'auto-train'}
           </button>
-        )}
+          {!data.activeModel && (
+            <button className="bot-link" onClick={() => setShowStrategies(!showStrategies)}>
+              {showStrategies ? 'hide' : 'configure'}
+            </button>
+          )}
+        </span>
       </h4>
 
       <div className="bot-engine-row">
@@ -166,11 +173,40 @@ export default function BotPanel() {
             disabled={busy === 'model'}
             title={`${m.modelType} trained on ${m.symbol} · AUC ${m.testAuc ?? '—'} · ${m.eligible ? 'passed publish gate' : 'FAILED gate — paper testing only'}`}
             onClick={() => act('model', () => post('/api/v1/bot/model', { modelId: m.id }))}>
-            {m.symbol} {m.modelType === 'gbm' ? 'GBM' : 'LR'}{m.eligible ? ' ✓' : ' ⚠'}
+            {m.symbol} {m.modelType.toUpperCase()}{m.usesMarket ? '+MKT' : ''}{m.eligible ? ' ✓' : ' ⚠'}
           </button>
         ))}
         {!(data.availableModels || []).length && (
-          <span className="bot-engine-hint">Train models in Model Lab →</span>
+          <span className="bot-engine-hint">Train models in Model Lab or hit auto-train →</span>
+        )}
+      </div>
+
+      {/* Protective exits (stop-loss / take-profit brackets). */}
+      <div className="bot-brackets">
+        <label className="bot-bracket-toggle">
+          <input type="checkbox" checked={Boolean(data.brackets?.enabled)}
+            onChange={e => act('brackets', () => post('/api/v1/bot/config', { brackets: { enabled: e.target.checked } }))} />
+          Stop-loss / take-profit
+        </label>
+        {data.brackets?.enabled && (
+          <span className="bot-bracket-inputs">
+            <label>SL%
+              <input type="number" step="1" defaultValue={Math.round((data.brackets.slPercent || 0.05) * 100)}
+                onBlur={e => act('brackets', () => post('/api/v1/bot/config', { brackets: { slPercent: (Number(e.target.value) || 5) / 100 } }))} />
+            </label>
+            <label>TP%
+              <input type="number" step="1" defaultValue={Math.round((data.brackets.tpPercent || 0.10) * 100)}
+                onBlur={e => act('brackets', () => post('/api/v1/bot/config', { brackets: { tpPercent: (Number(e.target.value) || 10) / 100 } }))} />
+            </label>
+            <label>Trail%
+              <input type="number" step="1" defaultValue={Math.round((data.brackets.trailPercent || 0) * 100)}
+                title="0 = off; a live trailing stop that ratchets up with the peak"
+                onBlur={e => act('brackets', () => post('/api/v1/bot/config', { brackets: { trailPercent: (Number(e.target.value) || 0) / 100 } }))} />
+            </label>
+            <span className="bot-bracket-rr">
+              R:R {((data.brackets.tpPercent || 0) / (data.brackets.slPercent || 1)).toFixed(1)}
+            </span>
+          </span>
         )}
       </div>
 

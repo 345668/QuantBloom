@@ -9,7 +9,9 @@ import { evaluateOrder, checkHaltConditions, DEFAULT_LIMITS } from './risk-gate.
 import { ensemble, sizePosition, STRATEGIES, PRESETS, describeStrategies, describePresets } from './strategies.js';
 import { reviewDecision, applyReview, mistralConfigured, getBudget } from './mistral.js';
 import { modelStrategy } from './model.js';
-import { getModel, listTrained } from './model-registry.js';
+import { getModel, listTrained, trainAndRegister } from './model-registry.js';
+import { computeBracket, updateTrailingStop } from './brackets.js';
+import { alignBenchmark } from './features.js';
 import * as broker from './alpaca.js';
 
 const state = {
@@ -26,6 +28,11 @@ const state = {
   // trained ML model from the Model Lab drives every decision instead.
   activeModelId: null,
   useLlm: true,
+  // Protective exits attached to each entry (null = off). slPercent 0.05 = a 5%
+  // stop; tpPercent 0.10 = a 10% target. Managed broker-side as a bracket.
+  brackets: { enabled: false, slPercent: 0.05, tpPercent: 0.10, trailPercent: 0 },
+  // Per-symbol high-water mark for the live trailing stop (peak since entry).
+  highWaterMarks: {},
   limits: { ...DEFAULT_LIMITS },
   ordersToday: 0,
   ordersDate: new Date().toISOString().slice(0, 10),
@@ -73,7 +80,7 @@ export function getState() {
     availableModels: listTrained().map(m => ({
       id: m.id, symbol: m.symbol, modelType: m.modelType,
       testAuc: m.testMetrics?.auc ?? null,
-      eligible: m.eligible, published: m.published,
+      eligible: m.eligible, published: m.published, usesMarket: m.usesMarket,
       createdAt: m.createdAt,
     })),
     activeModel: state.activeModelId ? (() => {
@@ -101,6 +108,41 @@ export function setActiveModel(modelId) {
   return { ok: true, activeModelId: modelId, eligible: m.eligible };
 }
 
+/**
+ * "Train itself": train a model on every watchlist symbol, then auto-select the
+ * strongest — preferring one that clears the publish gate, otherwise the best
+ * out-of-sample AUC. This is how the bot refreshes its own model; a scheduler
+ * or the UI can call it. Honest by construction: it still only promotes what
+ * the gate/metrics justify, and reports when nothing is worth using.
+ */
+export async function autoTrain({ fetchCandles, fetchBenchmark, modelType = 'gbm', useMarket = false } = {}) {
+  if (!fetchCandles) return { ok: false, error: 'No candle source' };
+  // Fetch the benchmark once when market-relative features are requested.
+  const benchmark = (useMarket && fetchBenchmark) ? await fetchBenchmark().catch(() => null) : null;
+  const trained = [];
+  for (const symbol of state.watchlist) {
+    try {
+      const candles = await fetchCandles(symbol).catch(() => null);
+      if (!candles || candles.length < 300) { trained.push({ symbol, ok: false, error: 'insufficient history' }); continue; }
+      const out = trainAndRegister(candles, { symbol, modelType, range: '5y', benchmark });
+      if (!out.ok) { trained.push({ symbol, ok: false, error: out.error }); continue; }
+      const m = out.model;
+      trained.push({ symbol, ok: true, id: m.id, auc: m.testMetrics?.auc ?? null, eligible: m.eligible });
+    } catch (e) {
+      trained.push({ symbol, ok: false, error: e.message });
+    }
+  }
+
+  const candidates = trained.filter(t => t.ok && t.auc != null);
+  if (!candidates.length) { audit('autotrain', { trained: trained.length, selected: null }); return { ok: true, trained, selected: null }; }
+  // Prefer an eligible model; among ties, the highest AUC.
+  candidates.sort((a, b) => (Number(b.eligible) - Number(a.eligible)) || (b.auc - a.auc));
+  const best = candidates[0];
+  setActiveModel(best.id);
+  audit('autotrain', { trained: trained.length, selected: best.symbol, auc: best.auc, eligible: best.eligible });
+  return { ok: true, trained, selected: best };
+}
+
 export function setEnabled(enabled, who = 'user') {
   // A drawdown halt cannot be cleared by flipping the switch — that would
   // defeat the purpose of requiring a deliberate restart.
@@ -123,6 +165,24 @@ export function resetHalt(who = 'user') {
 export function updateConfig(patch = {}) {
   if (Array.isArray(patch.watchlist)) {
     state.watchlist = patch.watchlist.map(s => String(s).toUpperCase()).slice(0, 20);
+  }
+  if (patch.brackets && typeof patch.brackets === 'object') {
+    const b = patch.brackets;
+    if (typeof b.enabled === 'boolean') state.brackets.enabled = b.enabled;
+    // Percentages are capped so a fat-finger can't set a 90% "stop".
+    if (b.slPercent != null) {
+      const n = Number(b.slPercent);
+      if (Number.isFinite(n) && n > 0 && n <= 0.5) state.brackets.slPercent = n;
+    }
+    if (b.tpPercent != null) {
+      const n = Number(b.tpPercent);
+      if (Number.isFinite(n) && n > 0 && n <= 2) state.brackets.tpPercent = n;
+    }
+    if (b.trailPercent != null) {
+      const n = Number(b.trailPercent);
+      // 0 disables the trailing stop; otherwise cap it like the hard stop.
+      if (Number.isFinite(n) && n >= 0 && n <= 0.5) state.brackets.trailPercent = n;
+    }
   }
   // A preset sets both the strategy set and the agreement threshold; an
   // explicit strategies/threshold patch afterwards marks the config custom.
@@ -185,8 +245,11 @@ export async function killSwitch(who = 'user') {
  * @param fetchTechnical - async (symbol) => technical payload
  * @param fetchNews      - async (symbol) => headlines
  * @param fetchCandles   - async (symbol) => OHLCV[] (only used when a model is active)
+ * @param fetchBenchmark - async () => OHLCV[] for the market benchmark (SPY),
+ *                         only used when the active model was trained with
+ *                         market-relative features.
  */
-export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = false }) {
+export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, fetchBenchmark, dryRun = false }) {
   rollDayIfNeeded();
   const startedAt = new Date().toISOString();
 
@@ -234,6 +297,14 @@ export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun
     audit('auto_halt', { reason: halt.reason, detail: halt.detail });
   }
 
+  // If the active model was trained with market-relative features, fetch the
+  // benchmark once for the whole cycle so every symbol aligns to the same SPY.
+  const activeRec = state.activeModelId ? getModel(state.activeModelId) : null;
+  let benchCandles = null;
+  if (activeRec?.usesMarket && fetchBenchmark) {
+    benchCandles = await fetchBenchmark().catch(() => null);
+  }
+
   const results = [];
   for (const symbol of state.watchlist) {
     try {
@@ -252,7 +323,9 @@ export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun
           results.push({ symbol, action: 'SKIP', reason: 'No candle history for model' });
           continue;
         }
-        const sig = modelStrategy(modelRec.artifact, candles, candles.length - 1);
+        const benchCloses = (modelRec.usesMarket && benchCandles)
+          ? alignBenchmark(candles, benchCandles) : null;
+        const sig = modelStrategy(modelRec.artifact, candles, candles.length - 1, { benchCloses });
         decision = {
           action: sig.action, confidence: sig.confidence,
           agreement: `${modelRec.modelType} model`,
@@ -275,6 +348,28 @@ export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun
 
       const price = technical.price;
       const held = posBySymbol[symbol];
+
+      // Live trailing stop: ratchet the peak on every held position and force an
+      // exit if price falls the trail distance below it. This runs AFTER the LLM
+      // review, so a protective stop can never be vetoed or damped — a stop is a
+      // stop. Client-side trailing complements the static broker-side bracket.
+      let trailing = null;
+      if (state.brackets.enabled && state.brackets.trailPercent > 0 && held?.qty > 0) {
+        const t = updateTrailingStop(state.highWaterMarks[symbol], price, state.brackets.trailPercent);
+        state.highWaterMarks[symbol] = t.hwm;
+        trailing = { hwm: t.hwm, stop: t.stop, breached: t.breached };
+        if (t.breached) {
+          decision = {
+            action: 'SELL', confidence: 1, agreement: 'trailing stop',
+            rationale: `Trailing stop hit at ${t.stop} (peak ${t.hwm}, ${(state.brackets.trailPercent * 100).toFixed(1)}% trail)`,
+            signals: [], trailingExit: true, llm: null,
+          };
+        }
+      } else if (!held || held.qty <= 0) {
+        // Flat: forget the peak so the next entry starts a fresh trail.
+        delete state.highWaterMarks[symbol];
+      }
+
       let order = null, gate = null, submitted = null;
 
       if (decision.action === 'BUY') {
@@ -284,16 +379,29 @@ export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun
         order = { symbol, side: 'sell', qty: held.qty, price };
       }
 
+      // Attach protective exits to a new long entry when brackets are enabled.
+      let bracket = null;
+      if (order && order.side === 'buy' && state.brackets.enabled) {
+        const b = computeBracket(price, state.brackets.slPercent, state.brackets.tpPercent);
+        if (b.valid) bracket = b;
+      }
+
       if (order) {
         gate = evaluateOrder(order, riskState, state.limits);
         if (gate.approved && !dryRun) {
-          submitted = await broker.submitOrder({
-            symbol, side: order.side, qty: gate.adjustedQty,
-            clientOrderId: `qb-${symbol}-${Date.now()}`,
-          });
+          submitted = bracket
+            ? await broker.submitBracketOrder({
+                symbol, side: order.side, qty: gate.adjustedQty,
+                stopLoss: bracket.stopLoss, takeProfit: bracket.takeProfit,
+                clientOrderId: `qb-${symbol}-${Date.now()}`,
+              })
+            : await broker.submitOrder({
+                symbol, side: order.side, qty: gate.adjustedQty,
+                clientOrderId: `qb-${symbol}-${Date.now()}`,
+              });
           state.ordersToday++;
           riskState.ordersToday = state.ordersToday;
-          audit('order_submitted', { symbol, side: order.side, qty: gate.adjustedQty, id: submitted.id });
+          audit('order_submitted', { symbol, side: order.side, qty: gate.adjustedQty, id: submitted.id, bracket: bracket ? { sl: bracket.stopLoss, tp: bracket.takeProfit } : null });
         }
       }
 
@@ -304,7 +412,8 @@ export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun
         signals: decision.signals, llm: decision.llm || null,
         model: decision.model || null,
         vetoed: decision.vetoed || false, damped: decision.damped || false,
-        order, gate, submitted, dryRun,
+        trailingExit: decision.trailingExit || false, trailing,
+        order, gate, submitted, bracket, dryRun,
       };
       results.push(record);
       decisions.unshift(record);

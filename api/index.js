@@ -1005,6 +1005,16 @@ function macdStrategy(ta) {
   if (m.histogram < 0) return { action: "SELL", confidence: strength, rationale: `MACD histogram ${m.histogram}` };
   return { action: "HOLD", confidence: 0, rationale: "MACD flat" };
 }
+function contrarianStrategy(ta) {
+  const price = ta?.price;
+  const ema2 = ta?.movingAverages?.ema12;
+  if (!price || ema2 == null) return null;
+  const mom = price / ema2 - 1;
+  const strength = clamp01(Math.abs(mom) / 0.02);
+  if (mom > 0) return { action: "SELL", confidence: strength, rationale: `Fading +${(mom * 100).toFixed(2)}% short-term move` };
+  if (mom < 0) return { action: "BUY", confidence: strength, rationale: `Fading ${(mom * 100).toFixed(2)}% short-term move` };
+  return { action: "HOLD", confidence: 0, rationale: "No short-term move to fade" };
+}
 function trendStrategy(ta) {
   const ma = ta?.movingAverages;
   const price = ta?.price;
@@ -1069,6 +1079,15 @@ var STRATEGIES = {
     worksWhen: "Stable volatility",
     failsWhen: "Volatility expansion \u2014 fades a breakout"
   },
+  contrarian: {
+    name: "Contrarian",
+    fn: contrarianStrategy,
+    weight: 1,
+    family: "Mean reversion",
+    description: "Fades the latest short-term move (position = -sign of recent momentum).",
+    worksWhen: "Choppy, mean-reverting intraday markets",
+    failsWhen: "Strong trends \u2014 fights the move"
+  },
   consensus: {
     name: "Indicator Consensus",
     fn: consensusStrategy,
@@ -1106,8 +1125,8 @@ var PRESETS = {
   },
   reversionOnly: {
     name: "Reversion only",
-    description: "RSI and Bollinger. Suited to range-bound markets.",
-    strategies: ["rsi", "bollinger"],
+    description: "RSI, Bollinger and contrarian. Suited to range-bound markets.",
+    strategies: ["rsi", "bollinger", "contrarian"],
     threshold: 0.2
   }
 };
@@ -1608,20 +1627,72 @@ function tripleBarrierLabel(candles, t, { up = 0.03, down = 0.02, horizon = 10 }
   const exit = candles[t + horizon].close;
   return exit > entry ? 1 : 0;
 }
-function buildDataset(candles, labelConfig = {}) {
+var MARKET_FEATURE_NAMES = [
+  "excessRet1",
+  // stock 1-bar return minus the benchmark's
+  "excessRet5",
+  // 5-bar excess return
+  "relStrength20",
+  // 20-bar return minus the benchmark's (relative strength)
+  "beta60",
+  // 60-bar beta to the benchmark
+  "corr60"
+  // 60-bar return correlation to the benchmark
+];
+function alignBenchmark(candles, benchCandles) {
+  const byTime = new Map(benchCandles.map((c) => [c.time, c.close]));
+  let last = null;
+  return candles.map((c) => {
+    if (byTime.has(c.time)) last = byTime.get(c.time);
+    return last;
+  });
+}
+var retAt = (arr, i, lag) => i - lag >= 0 && arr[i - lag] ? arr[i] / arr[i - lag] - 1 : 0;
+function marketFeaturesAt(candles, benchCloses, t) {
+  const closes = candles.map((c) => c.close);
+  const b = benchCloses;
+  if (!b || b[t] == null || t < 60) return MARKET_FEATURE_NAMES.map(() => 0);
+  const excessRet1 = retAt(closes, t, 1) - retAt(b, t, 1);
+  const excessRet5 = retAt(closes, t, 5) - retAt(b, t, 5);
+  const relStrength20 = retAt(closes, t, 20) - retAt(b, t, 20);
+  const sr = [], br = [];
+  for (let i = t - 59; i <= t; i++) {
+    if (b[i - 1] == null || b[i] == null) continue;
+    sr.push((closes[i] - closes[i - 1]) / closes[i - 1]);
+    br.push((b[i] - b[i - 1]) / b[i - 1]);
+  }
+  let beta = 0, corr = 0;
+  if (sr.length > 5) {
+    const ms = sr.reduce((a, x) => a + x, 0) / sr.length;
+    const mb = br.reduce((a, x) => a + x, 0) / br.length;
+    let cov = 0, vb = 0, vs = 0;
+    for (let i = 0; i < sr.length; i++) {
+      cov += (sr[i] - ms) * (br[i] - mb);
+      vb += (br[i] - mb) ** 2;
+      vs += (sr[i] - ms) ** 2;
+    }
+    beta = vb > 0 ? cov / vb : 0;
+    corr = vb > 0 && vs > 0 ? cov / Math.sqrt(vb * vs) : 0;
+  }
+  return [excessRet1, excessRet5, relStrength20, beta, corr].map((v) => Number.isFinite(v) ? v : 0);
+}
+function buildDataset(candles, labelConfig = {}, benchCandles = null) {
   const X = [], y = [], times = [];
   const warmup = 200;
   const horizon = labelConfig.horizon || 10;
+  const benchCloses = benchCandles ? alignBenchmark(candles, benchCandles) : null;
+  const featureNames = benchCloses ? [...FEATURE_NAMES, ...MARKET_FEATURE_NAMES] : FEATURE_NAMES;
   for (let t = warmup; t < candles.length - horizon; t++) {
-    const feat = featuresAt(candles, t);
+    let feat = featuresAt(candles, t);
     const label = tripleBarrierLabel(candles, t, labelConfig);
     if (feat && label != null) {
+      if (benchCloses) feat = feat.concat(marketFeaturesAt(candles, benchCloses, t));
       X.push(feat);
       y.push(label);
       times.push(candles[t].time);
     }
   }
-  return { X, y, times, featureNames: FEATURE_NAMES };
+  return { X, y, times, featureNames };
 }
 function temporalSplit(dataset, testFraction = 0.3) {
   const n = dataset.X.length;
@@ -1734,6 +1805,85 @@ function featureImportance(model2) {
   return model2.featureNames.map((name, i) => ({ name, importance: +(imp[i] / total).toFixed(4) })).sort((a, b) => b.importance - a.importance);
 }
 
+// bot/eigen.js
+function jacobiEigen(matrix, { maxSweeps = 100, tol = 1e-12 } = {}) {
+  const n = matrix.length;
+  if (n === 1) return { values: [matrix[0][0]], vectors: [[1]] };
+  const a = matrix.map((r) => r.slice());
+  const v = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_2, j) => i === j ? 1 : 0));
+  for (let sweep = 0; sweep < maxSweeps; sweep++) {
+    let off = 0;
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) off += a[i][j] * a[i][j];
+    if (off < tol) break;
+    for (let p = 0; p < n; p++) {
+      for (let q = p + 1; q < n; q++) {
+        if (Math.abs(a[p][q]) < 1e-300) continue;
+        const app2 = a[p][p], aqq = a[q][q], apq = a[p][q];
+        const phi = 0.5 * Math.atan2(2 * apq, app2 - aqq);
+        const c = Math.cos(phi), s = Math.sin(phi);
+        for (let k = 0; k < n; k++) {
+          const akp = a[k][p], akq = a[k][q];
+          a[k][p] = c * akp + s * akq;
+          a[k][q] = -s * akp + c * akq;
+        }
+        for (let k = 0; k < n; k++) {
+          const apk = a[p][k], aqk = a[q][k];
+          a[p][k] = c * apk + s * aqk;
+          a[q][k] = -s * apk + c * aqk;
+        }
+        for (let k = 0; k < n; k++) {
+          const vkp = v[k][p], vkq = v[k][q];
+          v[k][p] = c * vkp + s * vkq;
+          v[k][q] = -s * vkp + c * vkq;
+        }
+      }
+    }
+  }
+  const values = a.map((r, i) => r[i]);
+  const order = values.map((_, i) => i).sort((x, y) => values[y] - values[x]);
+  return {
+    values: order.map((i) => values[i]),
+    // Column i of v is the eigenvector for the i-th eigenvalue.
+    vectors: order.map((i) => normalize(v.map((row) => row[i])))
+  };
+}
+function normalize(vec) {
+  const norm = Math.sqrt(vec.reduce((s, x) => s + x * x, 0)) || 1;
+  const lead = vec.find((x) => Math.abs(x) > 1e-9) || 1;
+  const sign = lead < 0 ? -1 : 1;
+  return vec.map((x) => x / norm * sign);
+}
+
+// bot/pca.js
+function fitPCA(X, k) {
+  const n = X.length, d = X[0].length;
+  const kk = Math.min(k, d);
+  const mean3 = new Array(d).fill(0), std = new Array(d).fill(0);
+  for (const row of X) for (let j = 0; j < d; j++) mean3[j] += row[j];
+  for (let j = 0; j < d; j++) mean3[j] /= n;
+  for (const row of X) for (let j = 0; j < d; j++) std[j] += (row[j] - mean3[j]) ** 2;
+  for (let j = 0; j < d; j++) std[j] = Math.sqrt(std[j] / n) || 1;
+  const Z = X.map((row) => row.map((v, j) => (v - mean3[j]) / std[j]));
+  const cols = Array.from({ length: d }, (_, j) => Z.map((r) => r[j]));
+  const cov = covariance(cols);
+  const { values, vectors } = jacobiEigen(cov);
+  const totalVar = values.reduce((s, v) => s + Math.max(v, 0), 0) || 1;
+  return {
+    mean: mean3,
+    std,
+    components: vectors.slice(0, kk),
+    explainedVariance: values.slice(0, kk).map((v) => +(Math.max(v, 0) / totalVar).toFixed(4)),
+    k: kk
+  };
+}
+function transformPCA(pca, row) {
+  const z = row.map((v, j) => (v - pca.mean[j]) / pca.std[j]);
+  return pca.components.map((comp) => comp.reduce((s, w, j) => s + w * z[j], 0));
+}
+function totalExplained(pca) {
+  return +pca.explainedVariance.reduce((a, b) => a + b, 0).toFixed(4);
+}
+
 // bot/model.js
 var sigmoid2 = (z) => 1 / (1 + Math.exp(-Math.max(-30, Math.min(30, z))));
 function fitScaler(X) {
@@ -1784,9 +1934,44 @@ function trainLogistic(X, y, opts = {}) {
 }
 function predictProba(model2, featureRow) {
   if (model2.type === "gbm") return predictProbaGBM(model2, featureRow);
+  if (model2.type === "pca") return predictProba(model2.classifier, transformPCA(model2.pca, featureRow));
+  if (model2.type === "ensemble") {
+    const ps = model2.members.map((mem) => predictProba(mem, featureRow));
+    return ps.reduce((a, b) => a + b, 0) / ps.length;
+  }
   const s = model2.scaler;
   const z = featureRow.reduce((acc, v, j) => acc + (v - s.means[j]) / s.stds[j] * model2.weights[j], model2.bias);
   return sigmoid2(z);
+}
+function trainPCA(X, y, opts = {}) {
+  const { k = 5, featureNames = FEATURE_NAMES, epochs = 400, lr = 0.1, l2 = 0.01 } = opts;
+  if (!X.length || X.length !== y.length) return null;
+  const pca = fitPCA(X, k);
+  const scores = X.map((row) => transformPCA(pca, row));
+  const factorNames = pca.components.map((_, i) => `PC${i + 1}`);
+  const classifier = trainLogistic(scores, y, { epochs, lr, l2, featureNames: factorNames });
+  if (!classifier) return null;
+  return {
+    type: "pca",
+    pca,
+    classifier,
+    k: pca.k,
+    explainedVariance: pca.explainedVariance,
+    totalExplained: totalExplained(pca),
+    featureNames,
+    trainedOn: X.length
+  };
+}
+function trainEnsemble(X, y, opts = {}) {
+  const { featureNames = FEATURE_NAMES, k = 5 } = opts;
+  if (!X.length || X.length !== y.length) return null;
+  const members = [
+    trainGBM(X, y, { nEstimators: 80, maxDepth: 3, learningRate: 0.08, minLeaf: 15, featureNames }),
+    trainLogistic(X, y, { epochs: 400, featureNames }),
+    trainPCA(X, y, { k, featureNames })
+  ].filter(Boolean);
+  if (members.length < 2) return null;
+  return { type: "ensemble", members, memberTypes: members.map((m) => m.type), featureNames, trainedOn: X.length };
 }
 function evaluate(model2, X, y) {
   if (!X.length) return null;
@@ -1826,9 +2011,14 @@ function rankAuc(scores, labels) {
   });
   return (rankSum - pos.length * (pos.length + 1) / 2) / (pos.length * neg.length);
 }
-function modelStrategy(model2, candles, t, { buyThreshold = 0.55, sellThreshold = 0.45 } = {}) {
-  const feat = featuresAt(candles, t);
+function modelStrategy(model2, candles, t, { buyThreshold = 0.55, sellThreshold = 0.45, benchCloses = null } = {}) {
+  let feat = featuresAt(candles, t);
   if (!feat) return { action: "HOLD", confidence: 0, rationale: "Insufficient history" };
+  const usesMarket = (model2.featureNames?.length || feat.length) > feat.length;
+  if (usesMarket) {
+    if (!benchCloses) return { action: "HOLD", confidence: 0, rationale: "Model needs a benchmark series (not supplied)" };
+    feat = feat.concat(marketFeaturesAt(candles, benchCloses, t));
+  }
   const p = predictProba(model2, feat);
   if (p >= buyThreshold) return { action: "BUY", confidence: +((p - 0.5) * 2).toFixed(3), rationale: `Model P(up)=${p.toFixed(2)}` };
   if (p <= sellThreshold) return { action: "SELL", confidence: +((0.5 - p) * 2).toFixed(3), rationale: `Model P(up)=${p.toFixed(2)}` };
@@ -2046,7 +2236,7 @@ function persist(store) {
 }
 
 // bot/model-registry.js
-var MODEL_TYPES = ["logistic", "gbm"];
+var MODEL_TYPES = ["logistic", "gbm", "pca", "ensemble"];
 var PUBLISH_GATE = {
   minTestAuc: 0.55,
   // better than a coin flip at telling up from down
@@ -2069,7 +2259,7 @@ function id() {
   return `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 }
 function backtestModel(model2, candles, testStartTime, opts = {}) {
-  const { initialCapital = 1e5, maxPositionPercent = 20 } = opts;
+  const { initialCapital = 1e5, maxPositionPercent = 20, benchCloses = null } = opts;
   const startIdx = candles.findIndex((c) => c.time >= testStartTime);
   if (startIdx < 60) return null;
   let cash = initialCapital, shares = 0;
@@ -2077,7 +2267,7 @@ function backtestModel(model2, candles, testStartTime, opts = {}) {
   let trades = 0;
   const slip = 7e-4;
   for (let t = startIdx; t < candles.length - 1; t++) {
-    const sig = modelStrategy(model2, candles, t);
+    const sig = modelStrategy(model2, candles, t, { benchCloses });
     const next = candles[t + 1];
     const eq = cash + shares * candles[t].close;
     if (sig.action === "BUY" && shares === 0) {
@@ -2148,7 +2338,9 @@ function trainAndRegister(candles, config = {}) {
   if (!candles || candles.length < 300) {
     return { ok: false, error: `Need 300+ bars, got ${candles?.length || 0}` };
   }
-  const dataset = buildDataset(candles, label);
+  const benchCandles = config.benchmark || null;
+  const benchCloses = benchCandles ? alignBenchmark(candles, benchCandles) : null;
+  const dataset = buildDataset(candles, label, benchCandles);
   if (dataset.X.length < 100) {
     return { ok: false, error: `Only ${dataset.X.length} labeled rows; need 100+` };
   }
@@ -2159,12 +2351,12 @@ function trainAndRegister(candles, config = {}) {
     learningRate: config.learningRate || 0.08,
     minLeaf: config.minLeaf || 15,
     featureNames: dataset.featureNames
-  }) : trainLogistic(split.train.X, split.train.y, { epochs, lr, l2, featureNames: dataset.featureNames });
+  }) : modelType === "pca" ? trainPCA(split.train.X, split.train.y, { k: config.k || 5, featureNames: dataset.featureNames }) : modelType === "ensemble" ? trainEnsemble(split.train.X, split.train.y, { k: config.k || 5, featureNames: dataset.featureNames }) : trainLogistic(split.train.X, split.train.y, { epochs, lr, l2, featureNames: dataset.featureNames });
   if (!model2) return { ok: false, error: "Training failed" };
   const trainMetrics = evaluate(model2, split.train.X, split.train.y);
   const testMetrics = evaluate(model2, split.test.X, split.test.y);
   const testStartTime = split.test.times[0];
-  const backtest = backtestModel(model2, candles, testStartTime, config);
+  const backtest = backtestModel(model2, candles, testStartTime, { ...config, benchCloses });
   const gate = evaluateGate({ testMetrics, backtest });
   const record = {
     id: id(),
@@ -2174,11 +2366,15 @@ function trainAndRegister(candles, config = {}) {
     createdAt: (/* @__PURE__ */ new Date()).toISOString(),
     config: { label, testFraction, epochs, lr, l2 },
     artifact: model2,
+    usesMarket: !!benchCloses,
+    featureCount: dataset.featureNames.length,
     trainMetrics,
     testMetrics,
     backtest,
     // Tree models can say which inputs they used — half the value of a GBM.
     featureImportance: modelType === "gbm" ? featureImportance(model2).slice(0, 8) : null,
+    // PCA reports how much variance its latent factors capture.
+    pcaVariance: modelType === "pca" ? { perComponent: model2.explainedVariance, total: model2.totalExplained } : null,
     eligible: gate.eligible,
     gateReasons: gate.reasons,
     published: false
@@ -2227,6 +2423,36 @@ function unpublish(modelId) {
   if (m) m.published = false;
   persist({ trained, published });
   return { ok: true };
+}
+
+// bot/brackets.js
+function roundTick(price) {
+  return price >= 1 ? +price.toFixed(2) : +price.toFixed(4);
+}
+function computeBracket(entry, slPercent, tpPercent) {
+  if (!(entry > 0)) return { stopLoss: null, takeProfit: null, valid: false, reason: "Invalid entry price" };
+  let stopLoss = null, takeProfit = null;
+  if (slPercent != null) {
+    if (!(slPercent > 0 && slPercent < 1)) return { stopLoss: null, takeProfit: null, valid: false, reason: "Stop % must be between 0 and 1" };
+    stopLoss = roundTick(entry * (1 - slPercent));
+  }
+  if (tpPercent != null) {
+    if (!(tpPercent > 0)) return { stopLoss: null, takeProfit: null, valid: false, reason: "Target % must be positive" };
+    takeProfit = roundTick(entry * (1 + tpPercent));
+  }
+  if (stopLoss != null && stopLoss >= entry) return { stopLoss, takeProfit, valid: false, reason: "Stop rounds to at or above entry" };
+  if (takeProfit != null && takeProfit <= entry) return { stopLoss, takeProfit, valid: false, reason: "Target rounds to at or below entry" };
+  return { stopLoss, takeProfit, valid: stopLoss != null || takeProfit != null, reason: null };
+}
+function trailingStop(highWaterMark, trailPercent) {
+  if (!(highWaterMark > 0) || !(trailPercent > 0 && trailPercent < 1)) return null;
+  return roundTick(highWaterMark * (1 - trailPercent));
+}
+function updateTrailingStop(prevHwm, price, trailPercent) {
+  if (!(price > 0)) return { hwm: prevHwm ?? null, stop: null, breached: false };
+  const hwm = Math.max(prevHwm ?? price, price);
+  const stop = trailingStop(hwm, trailPercent);
+  return { hwm, stop, breached: stop != null && price <= stop };
 }
 
 // bot/alpaca.js
@@ -2330,6 +2556,40 @@ async function submitOrder({ symbol, side, qty, type = "market", timeInForce = "
     submittedAt: o.submitted_at
   };
 }
+async function submitBracketOrder({ symbol, side, qty, stopLoss, takeProfit, timeInForce = "gtc", clientOrderId }) {
+  const body = {
+    symbol,
+    side,
+    qty: String(qty),
+    type: "market",
+    time_in_force: timeInForce,
+    ...clientOrderId ? { client_order_id: clientOrderId } : {}
+  };
+  if (stopLoss != null && takeProfit != null) {
+    body.order_class = "bracket";
+    body.stop_loss = { stop_price: String(stopLoss) };
+    body.take_profit = { limit_price: String(takeProfit) };
+  } else if (stopLoss != null) {
+    body.order_class = "oto";
+    body.stop_loss = { stop_price: String(stopLoss) };
+  } else if (takeProfit != null) {
+    body.order_class = "oto";
+    body.take_profit = { limit_price: String(takeProfit) };
+  }
+  const o = await alpaca("/orders", { method: "POST", body: JSON.stringify(body) });
+  return {
+    id: o.id,
+    clientOrderId: o.client_order_id,
+    symbol: o.symbol,
+    side: o.side,
+    qty: parseFloat(o.qty),
+    type: o.type,
+    orderClass: o.order_class,
+    status: o.status,
+    submittedAt: o.submitted_at,
+    legs: (o.legs || []).length
+  };
+}
 async function cancelAllOrders() {
   try {
     const r = await alpaca("/orders", { method: "DELETE" });
@@ -2368,6 +2628,11 @@ var state = {
   // trained ML model from the Model Lab drives every decision instead.
   activeModelId: null,
   useLlm: true,
+  // Protective exits attached to each entry (null = off). slPercent 0.05 = a 5%
+  // stop; tpPercent 0.10 = a 10% target. Managed broker-side as a bracket.
+  brackets: { enabled: false, slPercent: 0.05, tpPercent: 0.1, trailPercent: 0 },
+  // Per-symbol high-water mark for the live trailing stop (peak since entry).
+  highWaterMarks: {},
   limits: { ...DEFAULT_LIMITS },
   ordersToday: 0,
   ordersDate: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
@@ -2412,6 +2677,7 @@ function getState() {
       testAuc: m.testMetrics?.auc ?? null,
       eligible: m.eligible,
       published: m.published,
+      usesMarket: m.usesMarket,
       createdAt: m.createdAt
     })),
     activeModel: state.activeModelId ? (() => {
@@ -2432,6 +2698,39 @@ function setActiveModel(modelId) {
   audit("model_selected", { modelId, type: m.modelType, symbol: m.symbol, eligible: m.eligible });
   return { ok: true, activeModelId: modelId, eligible: m.eligible };
 }
+async function autoTrain({ fetchCandles, fetchBenchmark, modelType = "gbm", useMarket = false } = {}) {
+  if (!fetchCandles) return { ok: false, error: "No candle source" };
+  const benchmark = useMarket && fetchBenchmark ? await fetchBenchmark().catch(() => null) : null;
+  const trained2 = [];
+  for (const symbol of state.watchlist) {
+    try {
+      const candles = await fetchCandles(symbol).catch(() => null);
+      if (!candles || candles.length < 300) {
+        trained2.push({ symbol, ok: false, error: "insufficient history" });
+        continue;
+      }
+      const out = trainAndRegister(candles, { symbol, modelType, range: "5y", benchmark });
+      if (!out.ok) {
+        trained2.push({ symbol, ok: false, error: out.error });
+        continue;
+      }
+      const m = out.model;
+      trained2.push({ symbol, ok: true, id: m.id, auc: m.testMetrics?.auc ?? null, eligible: m.eligible });
+    } catch (e) {
+      trained2.push({ symbol, ok: false, error: e.message });
+    }
+  }
+  const candidates = trained2.filter((t) => t.ok && t.auc != null);
+  if (!candidates.length) {
+    audit("autotrain", { trained: trained2.length, selected: null });
+    return { ok: true, trained: trained2, selected: null };
+  }
+  candidates.sort((a, b) => Number(b.eligible) - Number(a.eligible) || b.auc - a.auc);
+  const best = candidates[0];
+  setActiveModel(best.id);
+  audit("autotrain", { trained: trained2.length, selected: best.symbol, auc: best.auc, eligible: best.eligible });
+  return { ok: true, trained: trained2, selected: best };
+}
 function setEnabled(enabled, who = "user") {
   if (enabled && state.halted && state.requiresManualRestart) {
     return { ok: false, error: `Cannot enable: ${state.haltReason}. Reset the halt first.` };
@@ -2450,6 +2749,22 @@ function resetHalt(who = "user") {
 function updateConfig(patch = {}) {
   if (Array.isArray(patch.watchlist)) {
     state.watchlist = patch.watchlist.map((s) => String(s).toUpperCase()).slice(0, 20);
+  }
+  if (patch.brackets && typeof patch.brackets === "object") {
+    const b = patch.brackets;
+    if (typeof b.enabled === "boolean") state.brackets.enabled = b.enabled;
+    if (b.slPercent != null) {
+      const n = Number(b.slPercent);
+      if (Number.isFinite(n) && n > 0 && n <= 0.5) state.brackets.slPercent = n;
+    }
+    if (b.tpPercent != null) {
+      const n = Number(b.tpPercent);
+      if (Number.isFinite(n) && n > 0 && n <= 2) state.brackets.tpPercent = n;
+    }
+    if (b.trailPercent != null) {
+      const n = Number(b.trailPercent);
+      if (Number.isFinite(n) && n >= 0 && n <= 0.5) state.brackets.trailPercent = n;
+    }
   }
   if (patch.preset && PRESETS[patch.preset]) {
     const p = PRESETS[patch.preset];
@@ -2510,7 +2825,7 @@ async function killSwitch(who = "user") {
   audit("kill_switch_complete", { cancelled, closed });
   return { ok: true, cancelled, closed };
 }
-async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = false }) {
+async function runCycle({ fetchTechnical, fetchNews, fetchCandles, fetchBenchmark, dryRun = false }) {
   rollDayIfNeeded();
   const startedAt = (/* @__PURE__ */ new Date()).toISOString();
   if (!state.enabled && !dryRun) {
@@ -2551,6 +2866,11 @@ async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = fals
     state.requiresManualRestart = halt.requiresManualRestart;
     audit("auto_halt", { reason: halt.reason, detail: halt.detail });
   }
+  const activeRec = state.activeModelId ? getModel(state.activeModelId) : null;
+  let benchCandles = null;
+  if (activeRec?.usesMarket && fetchBenchmark) {
+    benchCandles = await fetchBenchmark().catch(() => null);
+  }
   const results = [];
   for (const symbol of state.watchlist) {
     try {
@@ -2567,7 +2887,8 @@ async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = fals
           results.push({ symbol, action: "SKIP", reason: "No candle history for model" });
           continue;
         }
-        const sig = modelStrategy(modelRec.artifact, candles, candles.length - 1);
+        const benchCloses = modelRec.usesMarket && benchCandles ? alignBenchmark(candles, benchCandles) : null;
+        const sig = modelStrategy(modelRec.artifact, candles, candles.length - 1, { benchCloses });
         decision = {
           action: sig.action,
           confidence: sig.confidence,
@@ -2592,6 +2913,25 @@ async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = fals
       }
       const price = technical.price;
       const held = posBySymbol[symbol];
+      let trailing = null;
+      if (state.brackets.enabled && state.brackets.trailPercent > 0 && held?.qty > 0) {
+        const t = updateTrailingStop(state.highWaterMarks[symbol], price, state.brackets.trailPercent);
+        state.highWaterMarks[symbol] = t.hwm;
+        trailing = { hwm: t.hwm, stop: t.stop, breached: t.breached };
+        if (t.breached) {
+          decision = {
+            action: "SELL",
+            confidence: 1,
+            agreement: "trailing stop",
+            rationale: `Trailing stop hit at ${t.stop} (peak ${t.hwm}, ${(state.brackets.trailPercent * 100).toFixed(1)}% trail)`,
+            signals: [],
+            trailingExit: true,
+            llm: null
+          };
+        }
+      } else if (!held || held.qty <= 0) {
+        delete state.highWaterMarks[symbol];
+      }
       let order = null, gate = null, submitted = null;
       if (decision.action === "BUY") {
         const qty = sizePosition(decision, account.equity, price, state.limits.maxPositionPercent);
@@ -2599,10 +2939,22 @@ async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = fals
       } else if (decision.action === "SELL" && held?.qty > 0) {
         order = { symbol, side: "sell", qty: held.qty, price };
       }
+      let bracket = null;
+      if (order && order.side === "buy" && state.brackets.enabled) {
+        const b = computeBracket(price, state.brackets.slPercent, state.brackets.tpPercent);
+        if (b.valid) bracket = b;
+      }
       if (order) {
         gate = evaluateOrder(order, riskState, state.limits);
         if (gate.approved && !dryRun) {
-          submitted = await submitOrder({
+          submitted = bracket ? await submitBracketOrder({
+            symbol,
+            side: order.side,
+            qty: gate.adjustedQty,
+            stopLoss: bracket.stopLoss,
+            takeProfit: bracket.takeProfit,
+            clientOrderId: `qb-${symbol}-${Date.now()}`
+          }) : await submitOrder({
             symbol,
             side: order.side,
             qty: gate.adjustedQty,
@@ -2610,7 +2962,7 @@ async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = fals
           });
           state.ordersToday++;
           riskState.ordersToday = state.ordersToday;
-          audit("order_submitted", { symbol, side: order.side, qty: gate.adjustedQty, id: submitted.id });
+          audit("order_submitted", { symbol, side: order.side, qty: gate.adjustedQty, id: submitted.id, bracket: bracket ? { sl: bracket.stopLoss, tp: bracket.takeProfit } : null });
         }
       }
       const record = {
@@ -2625,9 +2977,12 @@ async function runCycle({ fetchTechnical, fetchNews, fetchCandles, dryRun = fals
         model: decision.model || null,
         vetoed: decision.vetoed || false,
         damped: decision.damped || false,
+        trailingExit: decision.trailingExit || false,
+        trailing,
         order,
         gate,
         submitted,
+        bracket,
         dryRun
       };
       results.push(record);
@@ -2923,6 +3278,7 @@ function verdictFor(dsr, pbo) {
 }
 
 // server.js
+import { neon } from "@neondatabase/serverless";
 import { existsSync as existsSync2 } from "node:fs";
 import { dirname as dirname2, join as join2 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -5225,6 +5581,7 @@ var botFetchNews = async (symbol) => {
   return resp.ok ? resp.json() : [];
 };
 var botFetchCandles = async (symbol) => yahooCandles(symbol, "1d", "1y").catch(() => null);
+var botFetchBenchmark = async () => yahooCandles("SPY", "1d", "1y").catch(() => null);
 app.get("/api/v1/bot/status", async (req, res) => {
   try {
     const state2 = getState();
@@ -5254,6 +5611,19 @@ app.post("/api/v1/bot/model", (req, res) => {
   const result = setActiveModel(req.body?.modelId || null);
   res.status(result.ok ? 200 : 404).json({ ...result, state: getState() });
 });
+app.post("/api/v1/bot/autotrain", async (req, res) => {
+  try {
+    const result = await autoTrain({
+      fetchCandles: (symbol) => yahooCandles(symbol, "1d", "5y").catch(() => null),
+      fetchBenchmark: () => yahooCandles("SPY", "1d", "5y").catch(() => null),
+      modelType: req.body?.modelType || "gbm",
+      useMarket: Boolean(req.body?.useMarket)
+    });
+    res.json({ ...result, state: getState() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 app.post("/api/v1/bot/reset-halt", (req, res) => {
   res.json({ ...resetHalt(), state: getState() });
 });
@@ -5263,6 +5633,7 @@ app.post("/api/v1/bot/run", async (req, res) => {
       fetchTechnical: botFetchTechnical,
       fetchNews: botFetchNews,
       fetchCandles: botFetchCandles,
+      fetchBenchmark: botFetchBenchmark,
       dryRun: Boolean(req.body?.dryRun)
     });
     res.json(result);
@@ -5326,6 +5697,7 @@ app.post("/api/v1/bot/train", async (req, res) => {
     if (candles.length < 300) {
       return res.json({ ok: false, error: `Only ${candles.length} bars for ${symbol}; need 300+` });
     }
+    const benchmark = body.useMarket ? await yahooCandles("SPY", "1d", range).catch(() => null) : null;
     const result = trainAndRegister(candles, {
       symbol,
       range,
@@ -5335,7 +5707,8 @@ app.post("/api/v1/bot/train", async (req, res) => {
         down: Number(body.down) || 0.02,
         horizon: parseInt(body.horizon) || 10
       },
-      testFraction: Number(body.testFraction) || 0.3
+      testFraction: Number(body.testFraction) || 0.3,
+      benchmark
     });
     res.json(result);
   } catch (err) {
@@ -5362,6 +5735,36 @@ if (existsSync2(join2(distDir, "index.html"))) {
   app.use(express.static(distDir));
   app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(join2(distDir, "index.html")));
 }
+var _neonSql = null;
+function neonSql() {
+  if (_neonSql) return _neonSql;
+  if (!process.env.DATABASE_URL) return null;
+  _neonSql = neon(process.env.DATABASE_URL);
+  return _neonSql;
+}
+app.post("/api/v1/auth/sync", async (req, res) => {
+  const supaUrl = process.env.SUPABASE_URL;
+  const supaKey = process.env.SUPABASE_ANON_KEY;
+  const token = (req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  if (!supaUrl || !supaKey) return res.json({ ok: false, skipped: "Supabase not configured" });
+  if (!token) return res.status(401).json({ ok: false, error: "Missing bearer token" });
+  try {
+    const r = await fetch2(`${supaUrl}/auth/v1/user`, { headers: { apikey: supaKey, Authorization: `Bearer ${token}` } });
+    if (!r.ok) return res.status(401).json({ ok: false, error: "Invalid token" });
+    const u = await r.json();
+    const sql = neonSql();
+    if (!sql) return res.json({ ok: true, mirrored: false, note: "Neon (DATABASE_URL) not configured", user: { id: u.id, email: u.email } });
+    await sql`CREATE TABLE IF NOT EXISTS app_users (
+      id uuid PRIMARY KEY, email text, created_at timestamptz, last_seen timestamptz DEFAULT now()
+    )`;
+    await sql`INSERT INTO app_users (id, email, created_at, last_seen)
+      VALUES (${u.id}, ${u.email}, ${u.created_at || null}, now())
+      ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, last_seen = now()`;
+    res.json({ ok: true, mirrored: true, user: { id: u.id, email: u.email } });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 var server_default = app;
 var isDirectRun = process.argv[1] && (process.argv[1].endsWith("server.js") || process.argv[1].endsWith("server"));
 if (isDirectRun) {

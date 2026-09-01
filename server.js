@@ -8,10 +8,13 @@ import { greeks as bsGreeks, impliedVol, yearsToExpiry } from './blackscholes.js
 import { ols, pValue } from './regression.js';
 import { covariance, efficientFrontier, portfolioVariance, minVariancePortfolio, tangencyPortfolio } from './portfolio-math.js';
 import * as bot from './bot/engine.js';
+import { askQuestion, mistralConfigured } from './bot/mistral.js';
+import * as scheduler from './bot/scheduler.js';
 import * as broker from './bot/alpaca.js';
 import { computeTechnical } from './bot/indicators.js';
 import { runBacktest, walkForward, sweepStrategies } from './bot/backtest.js';
 import * as models from './bot/model-registry.js';
+import { neon } from '@neondatabase/serverless';
 
 dotenv.config();
 
@@ -1005,16 +1008,20 @@ app.get('/api/v1/forex', async (req, res) => {
     if (cached) return res.json(cached);
 
     const forexSymbols = ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'USDCHF=X', 'AUDUSD=X', 'USDCAD=X', 'NZDUSD=X'];
+    const emSymbols = ['USDMXN=X', 'USDZAR=X', 'USDTRY=X', 'USDBRL=X', 'USDINR=X', 'USDCNH=X'];
     const commoditySymbols = ['GC=F', 'SI=F', 'CL=F', 'NG=F', 'HG=F'];
 
-    const [forexResults, commodityResults] = await Promise.all([
+    const [forexResults, emResults, commodityResults] = await Promise.all([
       Promise.allSettled(forexSymbols.map(s => yahooQuote(s))),
+      Promise.allSettled(emSymbols.map(s => yahooQuote(s))),
       Promise.allSettled(commoditySymbols.map(s => yahooQuote(s))),
     ]);
 
     const nameMap = {
       'EURUSD=X': 'EUR/USD', 'GBPUSD=X': 'GBP/USD', 'USDJPY=X': 'USD/JPY',
       'USDCHF=X': 'USD/CHF', 'AUDUSD=X': 'AUD/USD', 'USDCAD=X': 'USD/CAD', 'NZDUSD=X': 'NZD/USD',
+      'USDMXN=X': 'USD/MXN', 'USDZAR=X': 'USD/ZAR', 'USDTRY=X': 'USD/TRY',
+      'USDBRL=X': 'USD/BRL', 'USDINR=X': 'USD/INR', 'USDCNH=X': 'USD/CNH',
       'GC=F': 'Gold', 'SI=F': 'Silver', 'CL=F': 'Crude Oil WTI', 'NG=F': 'Natural Gas', 'HG=F': 'Copper',
     };
 
@@ -1026,6 +1033,7 @@ app.get('/api/v1/forex', async (req, res) => {
 
     const result = {
       forex: forexResults.map(mapQuote).filter(Boolean),
+      emerging: emResults.map(mapQuote).filter(Boolean),
       commodities: commodityResults.map(mapQuote).filter(Boolean),
     };
 
@@ -2756,6 +2764,64 @@ const botFetchNews = async (symbol) => {
 };
 // A year of daily candles for the active model's feature computation.
 const botFetchCandles = async (symbol) => yahooCandles(symbol, '1d', '1y').catch(() => null);
+// SPY as the market benchmark for cross-asset features (1y for the live path).
+const botFetchBenchmark = async () => yahooCandles('SPY', '1d', '1y').catch(() => null);
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// POST /api/v1/ask — ASKB "Ask QuantBloom" assistant (read-only).
+// Assembles a compact snapshot of local terminal data for the referenced
+// symbol plus the bot's status, then asks the LLM. Falls back to a
+// deterministic templated summary when no LLM key is configured.
+// ---------------------------------------------------------------------------
+function askExtractSymbol(question, fallback) {
+  const m = (question || '').match(/\b([A-Z]{1,5})\b/g);
+  if (m) {
+    for (const t of m) {
+      if (!['A', 'I', 'THE', 'IS', 'IT', 'MY', 'AI', 'US', 'OK', 'PE', 'EPS'].includes(t)) return t;
+    }
+  }
+  return fallback;
+}
+
+app.post('/api/v1/ask', async (req, res) => {
+  try {
+    const question = String(req.body?.question || '').slice(0, 500);
+    if (!question.trim()) return res.status(400).json({ error: 'question required' });
+    const symbol = (req.body?.symbol ? String(req.body.symbol) : askExtractSymbol(question, 'AAPL')).toUpperCase();
+
+    const [quote, technical] = await Promise.all([
+      yahooQuote(`${symbol}`).catch(() => null),
+      botFetchTechnical(symbol).catch(() => null),
+    ]);
+    const st = bot.getState();
+
+    const lines = [];
+    if (quote) lines.push(`${symbol} price $${quote.price} (${quote.changePercent >= 0 ? '+' : ''}${quote.changePercent?.toFixed(2)}% today), volume ${quote.volume}`);
+    if (technical?.summary) lines.push(`Technical summary: ${technical.summary.overall} (${technical.summary.buy} buy / ${technical.summary.neutral} neutral / ${technical.summary.sell} sell signals)`);
+    if (technical?.oscillators?.rsi14 != null) lines.push(`RSI(14) ${technical.oscillators.rsi14}, MACD hist ${technical.oscillators.macdHist ?? '—'}`);
+    if (technical?.movingAverages?.cross) lines.push(`Moving-average state: ${technical.movingAverages.cross}`);
+    if (technical?.range52w) lines.push(`52-week range position: ${technical.range52w.position}%`);
+    lines.push(`Trading bot: ${st.enabled ? 'ENABLED' : 'idle (off)'}, ${st.brokerConfigured ? 'paper broker connected' : 'no broker'}, orders today ${st.ordersToday ?? 0}${st.halted ? `, HALTED (${st.haltReason})` : ''}`);
+    const context = lines.join('\n');
+
+    const llm = await askQuestion({ question, context });
+    if (llm?.answer) {
+      return res.json({ answer: llm.answer, symbol, source: 'llm', model: llm.model, context: lines });
+    }
+
+    // Deterministic fallback — summarise the assembled facts.
+    const fallback = quote
+      ? `${symbol} is at $${quote.price} (${quote.changePercent >= 0 ? '+' : ''}${quote.changePercent?.toFixed(2)}% today).` +
+        (technical?.summary ? ` Technicals read ${technical.summary.overall.toLowerCase()} (${technical.summary.buy} buy / ${technical.summary.sell} sell signals)${technical?.oscillators?.rsi14 != null ? `, RSI ${technical.oscillators.rsi14}` : ''}.` : '') +
+        ` The trading bot is ${st.enabled ? 'enabled' : 'idle'}.` +
+        (mistralConfigured() ? '' : ' (LLM not configured — this is a data summary; add MISTRAL_API_KEY for natural-language answers.)')
+      : `No live data found for ${symbol}. Try a valid ticker, or check the Markets panel.`;
+    return res.json({ answer: fallback, symbol, source: llm?.budgetExhausted ? 'budget' : 'fallback', context: lines });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.get('/api/v1/bot/status', async (req, res) => {
   try {
@@ -2792,6 +2858,22 @@ app.post('/api/v1/bot/model', (req, res) => {
   res.status(result.ok ? 200 : 404).json({ ...result, state: bot.getState() });
 });
 
+// Auto-train: the bot trains a model per watchlist symbol and selects the best.
+// Training needs a long history, so fetch 5y here (not the 1y live path).
+app.post('/api/v1/bot/autotrain', async (req, res) => {
+  try {
+    const result = await bot.autoTrain({
+      fetchCandles: (symbol) => yahooCandles(symbol, '1d', '5y').catch(() => null),
+      fetchBenchmark: () => yahooCandles('SPY', '1d', '5y').catch(() => null),
+      modelType: req.body?.modelType || 'gbm',
+      useMarket: Boolean(req.body?.useMarket),
+    });
+    res.json({ ...result, state: bot.getState() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/v1/bot/reset-halt', (req, res) => {
   res.json({ ...bot.resetHalt(), state: bot.getState() });
 });
@@ -2803,8 +2885,52 @@ app.post('/api/v1/bot/run', async (req, res) => {
       fetchTechnical: botFetchTechnical,
       fetchNews: botFetchNews,
       fetchCandles: botFetchCandles,
+      fetchBenchmark: botFetchBenchmark,
       dryRun: Boolean(req.body?.dryRun),
     });
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Tick sequencer (scheduler). Every tick runs the normal cycle — the risk gate,
+// paper-only broker and kill switch all still apply.
+// ---------------------------------------------------------------------------
+const runOneTick = () => bot.runCycle({
+  fetchTechnical: botFetchTechnical,
+  fetchNews: botFetchNews,
+  fetchCandles: botFetchCandles,
+  fetchBenchmark: botFetchBenchmark,
+  dryRun: false,
+});
+// Bind the tick function so a manual "Run tick now" works before start.
+scheduler.bindTick(runOneTick);
+
+app.get('/api/v1/bot/scheduler', (req, res) => {
+  res.json(scheduler.getSchedulerState());
+});
+
+app.post('/api/v1/bot/scheduler', (req, res) => {
+  const action = req.body?.action;
+  if (action === 'start') {
+    return res.json(scheduler.startScheduler({ tick: runOneTick, intervalMs: req.body?.intervalMs }));
+  }
+  if (action === 'stop') {
+    return res.json(scheduler.stopScheduler());
+  }
+  if (action === 'interval') {
+    return res.json({ ok: true, state: scheduler.setInterval_(req.body?.intervalMs) });
+  }
+  return res.status(400).json({ error: "action must be 'start', 'stop' or 'interval'" });
+});
+
+// Run a single tick now (manual sequencer step; works on serverless too).
+app.post('/api/v1/bot/tick', async (req, res) => {
+  try {
+    const result = await scheduler.runTick();
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -2890,6 +3016,8 @@ app.post('/api/v1/bot/train', async (req, res) => {
     if (candles.length < 300) {
       return res.json({ ok: false, error: `Only ${candles.length} bars for ${symbol}; need 300+` });
     }
+    // Optional cross-asset (SPY) market-relative features.
+    const benchmark = body.useMarket ? await yahooCandles('SPY', '1d', range).catch(() => null) : null;
     const result = models.trainAndRegister(candles, {
       symbol, range,
       modelType: body.modelType || 'logistic',
@@ -2899,6 +3027,7 @@ app.post('/api/v1/bot/train', async (req, res) => {
         horizon: parseInt(body.horizon) || 10,
       },
       testFraction: Number(body.testFraction) || 0.3,
+      benchmark,
     });
     res.json(result);
   } catch (err) {
@@ -2942,6 +3071,49 @@ if (existsSync(join(distDir, 'index.html'))) {
   // SPA fallback: any non-API path returns index.html for client routing.
   app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(join(distDir, 'index.html')));
 }
+
+// ---------------------------------------------------------------------------
+// Auth sync: validate a Supabase access token and mirror the user into Neon.
+// Login itself happens client-side against Supabase; this endpoint keeps a
+// server-side copy of the profile in Postgres (Neon). Both are optional — with
+// neither configured the terminal runs open, so this degrades to a no-op.
+// ---------------------------------------------------------------------------
+let _neonSql = null;
+function neonSql() {
+  if (_neonSql) return _neonSql;
+  if (!process.env.DATABASE_URL) return null;
+  _neonSql = neon(process.env.DATABASE_URL);
+  return _neonSql;
+}
+
+app.post('/api/v1/auth/sync', async (req, res) => {
+  const supaUrl = process.env.SUPABASE_URL;
+  const supaKey = process.env.SUPABASE_ANON_KEY;
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (!supaUrl || !supaKey) return res.json({ ok: false, skipped: 'Supabase not configured' });
+  if (!token) return res.status(401).json({ ok: false, error: 'Missing bearer token' });
+
+  try {
+    // Validate the token with Supabase (never trust the client's claim of who it is).
+    const r = await fetch(`${supaUrl}/auth/v1/user`, { headers: { apikey: supaKey, Authorization: `Bearer ${token}` } });
+    if (!r.ok) return res.status(401).json({ ok: false, error: 'Invalid token' });
+    const u = await r.json();
+
+    const sql = neonSql();
+    if (!sql) return res.json({ ok: true, mirrored: false, note: 'Neon (DATABASE_URL) not configured', user: { id: u.id, email: u.email } });
+
+    await sql`CREATE TABLE IF NOT EXISTS app_users (
+      id uuid PRIMARY KEY, email text, created_at timestamptz, last_seen timestamptz DEFAULT now()
+    )`;
+    await sql`INSERT INTO app_users (id, email, created_at, last_seen)
+      VALUES (${u.id}, ${u.email}, ${u.created_at || null}, now())
+      ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email, last_seen = now()`;
+
+    res.json({ ok: true, mirrored: true, user: { id: u.id, email: u.email } });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 // Export for Vercel serverless
 export default app;

@@ -9,13 +9,13 @@
 // bypassed by wishing.
 // ---------------------------------------------------------------------------
 
-import { buildDataset, temporalSplit } from './features.js';
-import { trainLogistic, evaluate, modelStrategy } from './model.js';
+import { buildDataset, temporalSplit, alignBenchmark } from './features.js';
+import { trainLogistic, trainPCA, trainEnsemble, evaluate, modelStrategy } from './model.js';
 import { trainGBM, featureImportance } from './gbm.js';
 import { summarise, deflatedSharpe } from './statistics.js';
 import { loadStore, persist } from './persistence.js';
 
-export const MODEL_TYPES = ['logistic', 'gbm'];
+export const MODEL_TYPES = ['logistic', 'gbm', 'pca', 'ensemble'];
 
 // Publish thresholds. Deliberately demanding — most strategies fail these, and
 // that is the correct outcome, not a bug to be tuned away.
@@ -44,7 +44,7 @@ function id() { return `m_${Date.now()}_${Math.random().toString(36).slice(2, 7)
  * bar the model sees only prior bars.
  */
 function backtestModel(model, candles, testStartTime, opts = {}) {
-  const { initialCapital = 100000, maxPositionPercent = 20 } = opts;
+  const { initialCapital = 100000, maxPositionPercent = 20, benchCloses = null } = opts;
   const startIdx = candles.findIndex(c => c.time >= testStartTime);
   if (startIdx < 60) return null;
 
@@ -54,7 +54,7 @@ function backtestModel(model, candles, testStartTime, opts = {}) {
   const slip = 0.0007; // 7bps round-trip friction proxy
 
   for (let t = startIdx; t < candles.length - 1; t++) {
-    const sig = modelStrategy(model, candles, t);
+    const sig = modelStrategy(model, candles, t, { benchCloses });
     const next = candles[t + 1];
     const eq = cash + shares * candles[t].close;
     if (sig.action === 'BUY' && shares === 0) {
@@ -129,7 +129,13 @@ export function trainAndRegister(candles, config = {}) {
     return { ok: false, error: `Need 300+ bars, got ${candles?.length || 0}` };
   }
 
-  const dataset = buildDataset(candles, label);
+  // Optional cross-asset benchmark (e.g. SPY) enriches training with market-
+  // relative features. Aligned once and reused for the model's own backtest so
+  // train and evaluation see identical inputs.
+  const benchCandles = config.benchmark || null;
+  const benchCloses = benchCandles ? alignBenchmark(candles, benchCandles) : null;
+
+  const dataset = buildDataset(candles, label, benchCandles);
   if (dataset.X.length < 100) {
     return { ok: false, error: `Only ${dataset.X.length} labeled rows; need 100+` };
   }
@@ -141,13 +147,17 @@ export function trainAndRegister(candles, config = {}) {
         learningRate: config.learningRate || 0.08, minLeaf: config.minLeaf || 15,
         featureNames: dataset.featureNames,
       })
+    : modelType === 'pca'
+    ? trainPCA(split.train.X, split.train.y, { k: config.k || 5, featureNames: dataset.featureNames })
+    : modelType === 'ensemble'
+    ? trainEnsemble(split.train.X, split.train.y, { k: config.k || 5, featureNames: dataset.featureNames })
     : trainLogistic(split.train.X, split.train.y, { epochs, lr, l2, featureNames: dataset.featureNames });
   if (!model) return { ok: false, error: 'Training failed' };
 
   const trainMetrics = evaluate(model, split.train.X, split.train.y);
   const testMetrics = evaluate(model, split.test.X, split.test.y);
   const testStartTime = split.test.times[0];
-  const backtest = backtestModel(model, candles, testStartTime, config);
+  const backtest = backtestModel(model, candles, testStartTime, { ...config, benchCloses });
 
   const gate = evaluateGate({ testMetrics, backtest });
 
@@ -157,9 +167,13 @@ export function trainAndRegister(candles, config = {}) {
     createdAt: new Date().toISOString(),
     config: { label, testFraction, epochs, lr, l2 },
     artifact: model,
+    usesMarket: !!benchCloses,
+    featureCount: dataset.featureNames.length,
     trainMetrics, testMetrics, backtest,
     // Tree models can say which inputs they used — half the value of a GBM.
     featureImportance: modelType === 'gbm' ? featureImportance(model).slice(0, 8) : null,
+    // PCA reports how much variance its latent factors capture.
+    pcaVariance: modelType === 'pca' ? { perComponent: model.explainedVariance, total: model.totalExplained } : null,
     eligible: gate.eligible,
     gateReasons: gate.reasons,
     published: false,
