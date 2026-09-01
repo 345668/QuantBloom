@@ -38,6 +38,7 @@ to run the app locally.
 | **Bloomberg desk** | World Clocks (WCV), FX dealer grid with bid/ask & spreads (FXGO), radial intraday-return sunburst (IMAP) |
 | **Mission Control** | "SURVIVAL × FIELD" — a regime-coloured market-field visualisation over a live bot operations rail (run log, position book, risk radar, fill heat, equity, ledger) |
 | **ASKB** | "Ask QuantBloom" — a read-only natural-language assistant over your live terminal data (Mistral-backed, with a deterministic fallback) |
+| **Tick sequencer** | Run the bot's trade cycle on a schedule (or one tick at a time); every tick still passes the hard risk gate |
 | **UX** | `Ctrl+K` command palette (`TICKER <GO>`), `Ctrl+Shift+M` panel pop-out, optional Supabase login mirrored to Neon |
 
 ---

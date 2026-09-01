@@ -50,6 +50,8 @@ import WorldClockPanel from './components/WorldClockPanel.jsx';
 import FxGridPanel from './components/FxGridPanel.jsx';
 import RegionMapPanel from './components/RegionMapPanel.jsx';
 import MissionControlPanel from './components/MissionControlPanel.jsx';
+import AskPanel from './components/AskPanel.jsx';
+import SchedulerPanel from './components/SchedulerPanel.jsx';
 import SoloFocus from './components/SoloFocus.jsx';
 import ShortcutsPanel from './components/ShortcutsPanel.jsx';
 import CommandPalette from './components/CommandPalette.jsx';
@@ -102,6 +104,12 @@ function Dashboard() {
           <CompanyProfile />
           <AnalystPanel />
         </div>
+      </div>
+
+      {/* Row 1a2: ASKB assistant + tick sequencer */}
+      <div className="dashboard-row row-2col">
+        <AskPanel />
+        <SchedulerPanel />
       </div>
 
       {/* Row 1b: Multi-chart grid */}

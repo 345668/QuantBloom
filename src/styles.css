@@ -2801,3 +2801,33 @@ body.theme-light .mc-field { background: radial-gradient(ellipse at 50% 40%, #ff
 .askb-send { width: 38px; border: 1px solid var(--border-bright); border-radius: 4px; background: var(--bg-secondary); color: var(--text-primary); font-size: 16px; cursor: pointer; }
 .askb-send:disabled { opacity: 0.4; cursor: default; }
 .askb-foot { font-size: 9px; color: var(--text-dim); margin-top: 6px; }
+
+/* ============================================================
+   Tick Sequencer (scheduler)
+   ============================================================ */
+.seq-status { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 11px; }
+.seq-dot { width: 8px; height: 8px; border-radius: 50%; }
+.seq-dot.on { background: var(--accent-up); box-shadow: 0 0 6px var(--accent-up); animation: seqpulse 1.6s infinite; }
+.seq-dot.off { background: var(--text-dim); }
+@keyframes seqpulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+.seq-state { font-weight: 700; letter-spacing: 0.08em; color: var(--text-body); }
+.seq-count { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.seq-last { margin-left: auto; font-size: 10px; }
+.seq-ok { color: var(--accent-up); }
+.seq-error { color: var(--accent-down); }
+.seq-times { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.seq-times > div { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; background: var(--bg-secondary); border-radius: 4px; }
+.seq-lbl { font-size: 9px; letter-spacing: 0.08em; color: var(--text-dim); text-transform: uppercase; }
+.seq-val { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text-body); }
+.seq-interval { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
+.seq-iv { font-size: 11px; padding: 4px 9px; border: 1px solid var(--border-bright); border-radius: 3px; background: var(--bg-secondary); color: var(--text-secondary); cursor: pointer; }
+.seq-iv.active { border-color: var(--text-primary); color: var(--text-primary); background: color-mix(in srgb, var(--text-primary) 10%, transparent); }
+.seq-controls { display: flex; gap: 6px; }
+.seq-btn { flex: 1; padding: 8px; border-radius: 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; cursor: pointer; border: 1px solid var(--border-bright); background: var(--bg-secondary); color: var(--text-body); }
+.seq-btn.start { border-color: var(--accent-up); color: var(--accent-up); }
+.seq-btn.stop { border-color: var(--accent-down); color: var(--accent-down); }
+.seq-btn.tick { border-color: var(--text-primary); color: var(--text-primary); }
+.seq-btn:disabled { opacity: 0.5; cursor: default; }
+.seq-result { margin-top: 8px; font-size: 11px; color: var(--text-secondary); padding: 6px 8px; background: var(--bg-secondary); border-radius: 4px; }
+.seq-foot { font-size: 9px; color: var(--text-dim); margin-top: 8px; }
+

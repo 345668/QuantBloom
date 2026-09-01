@@ -9,6 +9,7 @@ import { ols, pValue } from './regression.js';
 import { covariance, efficientFrontier, portfolioVariance, minVariancePortfolio, tangencyPortfolio } from './portfolio-math.js';
 import * as bot from './bot/engine.js';
 import { askQuestion, mistralConfigured } from './bot/mistral.js';
+import * as scheduler from './bot/scheduler.js';
 import * as broker from './bot/alpaca.js';
 import { computeTechnical } from './bot/indicators.js';
 import { runBacktest, walkForward, sweepStrategies } from './bot/backtest.js';
@@ -2895,6 +2896,47 @@ app.post('/api/v1/bot/run', async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
+// Tick sequencer (scheduler). Every tick runs the normal cycle — the risk gate,
+// paper-only broker and kill switch all still apply.
+// ---------------------------------------------------------------------------
+const runOneTick = () => bot.runCycle({
+  fetchTechnical: botFetchTechnical,
+  fetchNews: botFetchNews,
+  fetchCandles: botFetchCandles,
+  fetchBenchmark: botFetchBenchmark,
+  dryRun: false,
+});
+// Bind the tick function so a manual "Run tick now" works before start.
+scheduler.bindTick(runOneTick);
+
+app.get('/api/v1/bot/scheduler', (req, res) => {
+  res.json(scheduler.getSchedulerState());
+});
+
+app.post('/api/v1/bot/scheduler', (req, res) => {
+  const action = req.body?.action;
+  if (action === 'start') {
+    return res.json(scheduler.startScheduler({ tick: runOneTick, intervalMs: req.body?.intervalMs }));
+  }
+  if (action === 'stop') {
+    return res.json(scheduler.stopScheduler());
+  }
+  if (action === 'interval') {
+    return res.json({ ok: true, state: scheduler.setInterval_(req.body?.intervalMs) });
+  }
+  return res.status(400).json({ error: "action must be 'start', 'stop' or 'interval'" });
+});
+
+// Run a single tick now (manual sequencer step; works on serverless too).
+app.post('/api/v1/bot/tick', async (req, res) => {
+  try {
+    const result = await scheduler.runTick();
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/v1/bot/kill', async (req, res) => {
   try {
     res.json({ ...(await bot.killSwitch()), state: bot.getState() });
