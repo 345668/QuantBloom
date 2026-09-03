@@ -2183,6 +2183,7 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
 .bot-tag { font-size: 7px; font-weight: 700; padding: 0 3px; border-radius: 2px; letter-spacing: 0.05em; }
 .bot-tag.veto { background: rgba(204,34,0,0.2); color: var(--accent-down); }
 .bot-tag.damp { background: rgba(255,184,0,0.18); color: var(--accent-neutral); }
+.bot-tag.confirm { background: rgba(0,204,68,0.18); color: var(--accent-up); }
 .bot-tag.dry { background: var(--bg-hover); color: var(--text-dim); }
 .bot-dec-why { font-size: 9px; color: var(--text-secondary); line-height: 1.35; }
 .bot-dec-llm { font-size: 9px; color: var(--text-dim); line-height: 1.35; margin-top: 1px; }

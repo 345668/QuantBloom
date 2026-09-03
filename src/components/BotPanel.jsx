@@ -276,6 +276,12 @@ export default function BotPanel() {
               onChange={e => act('llm', () => post('/api/v1/bot/config', { useLlm: e.target.checked }))} />
             Mistral review {data.llmConfigured ? '' : '(no API key)'}
           </label>
+
+          <label className="bot-llm-toggle">
+            <input type="checkbox" checked={Boolean(data.useResearch)}
+              onChange={e => act('research', () => post('/api/v1/bot/config', { useResearch: e.target.checked }))} />
+            Research confirmation (veto/damp only)
+          </label>
         </div>
       )}
 
@@ -293,9 +299,20 @@ export default function BotPanel() {
                 <span className="bot-dec-conf">{d.confidence != null ? `${(d.confidence * 100).toFixed(0)}%` : ''}</span>
                 {d.vetoed && <span className="bot-tag veto">VETOED</span>}
                 {d.damped && <span className="bot-tag damp">DAMPED</span>}
+                {d.vetoedByResearch && <span className="bot-tag veto">RSCH VETO</span>}
+                {d.dampedByResearch && <span className="bot-tag damp">RSCH DAMP</span>}
+                {d.researchConfirmed && <span className="bot-tag confirm">RSCH ✓</span>}
                 {d.dryRun && <span className="bot-tag dry">DRY</span>}
               </div>
               <div className="bot-dec-why">{d.rationale}</div>
+              {d.research && d.research.direction && d.research.direction !== 'neutral' && (
+                <div className="bot-dec-llm">
+                  <span className={`bot-llm-stance ${d.research.direction === 'bullish' ? 'positive' : d.research.direction === 'bearish' ? 'negative' : 'neutral-sig'}`}>
+                    RESEARCH {d.research.direction.toUpperCase()} · {d.research.conviction}
+                  </span>
+                  {(d.research.reasons || []).slice(0, 2).join('; ')}
+                </div>
+              )}
               {d.llm && d.llm.stance !== 'UNAVAILABLE' && (
                 <div className="bot-dec-llm">
                   <span className={`bot-llm-stance ${d.llm.stance === 'AGREE' ? 'positive' : d.llm.stance === 'DISAGREE' ? 'negative' : 'neutral-sig'}`}>
@@ -318,8 +335,8 @@ export default function BotPanel() {
           : 'LIVE endpoint configured. Real orders will be placed.'}{' '}
         Every order passes a risk gate ({data.limits?.maxPositionPercent}% max position,
         {' '}{data.limits?.maxDailyLossPercent}% daily loss halt, {data.limits?.maxDrawdownPercent}% drawdown halt).
-        The LLM can veto or shrink a trade but never originate or enlarge one.
-        Not investment advice.
+        The LLM review and the Research Desk gate can veto or shrink a trade but
+        never originate or enlarge one. Not investment advice.
       </p>
     </div>
   );

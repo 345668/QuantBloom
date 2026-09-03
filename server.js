@@ -2765,6 +2765,17 @@ const botFetchNews = async (symbol) => {
   const resp = await fetch(`http://127.0.0.1:${port}/api/v1/news?symbol=${symbol}&limit=5`);
   return resp.ok ? resp.json() : [];
 };
+// The Research Desk brief entry for one symbol (advisory gate). Returns null
+// when the symbol has no directional signal, so the gate is a no-op.
+const botFetchResearch = async (symbol) => {
+  try {
+    const resp = await fetch(`http://127.0.0.1:${port}/api/v1/research?symbols=${symbol}`);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const e = (data.entries || []).find(x => x.symbol === symbol);
+    return e ? { direction: e.direction, conviction: e.conviction, reasons: e.reasons } : null;
+  } catch { return null; }
+};
 // A year of daily candles for the active model's feature computation.
 const botFetchCandles = async (symbol) => yahooCandles(symbol, '1d', '1y').catch(() => null);
 // SPY as the market benchmark for cross-asset features (1y for the live path).
@@ -2990,6 +3001,7 @@ app.post('/api/v1/bot/run', async (req, res) => {
       fetchNews: botFetchNews,
       fetchCandles: botFetchCandles,
       fetchBenchmark: botFetchBenchmark,
+      fetchResearch: botFetchResearch,
       dryRun: Boolean(req.body?.dryRun),
     });
     res.json(result);
@@ -3008,6 +3020,7 @@ const runOneTick = () => bot.runCycle({
   fetchNews: botFetchNews,
   fetchCandles: botFetchCandles,
   fetchBenchmark: botFetchBenchmark,
+  fetchResearch: botFetchResearch,
   dryRun: false,
 });
 // Bind the tick function so a manual "Run tick now" works before start.
