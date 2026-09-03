@@ -50,6 +50,7 @@ import WorldClockPanel from './components/WorldClockPanel.jsx';
 import FxGridPanel from './components/FxGridPanel.jsx';
 import RegionMapPanel from './components/RegionMapPanel.jsx';
 import MissionControlPanel from './components/MissionControlPanel.jsx';
+import ResearchDeskPanel from './components/ResearchDeskPanel.jsx';
 import AskPanel from './components/AskPanel.jsx';
 import SchedulerPanel from './components/SchedulerPanel.jsx';
 import SoloFocus from './components/SoloFocus.jsx';
@@ -122,6 +123,11 @@ function Dashboard() {
       {/* Row 1c: Mission Control — market field + bot operations rail */}
       <div className="dashboard-row row-1col">
         <MissionControlPanel />
+      </div>
+
+      {/* Row 1d: Research Desk — AI hedge-fund morning brief */}
+      <div className="dashboard-row row-1col">
+        <ResearchDeskPanel />
       </div>
 
       {/* Row 2: Bot + Backtest + Markets board */}

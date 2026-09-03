@@ -10,6 +10,9 @@ import { covariance, efficientFrontier, portfolioVariance, minVariancePortfolio,
 import * as bot from './bot/engine.js';
 import { askQuestion, mistralConfigured } from './bot/mistral.js';
 import * as scheduler from './bot/scheduler.js';
+import { aggregateSentiment } from './src/lib/loughran.js';
+import { detectCluster } from './src/lib/insiders.js';
+import { assembleBrief } from './src/lib/brief.js';
 import * as broker from './bot/alpaca.js';
 import { computeTechnical } from './bot/indicators.js';
 import { runBacktest, walkForward, sweepStrategies } from './bot/backtest.js';
@@ -2818,6 +2821,107 @@ app.post('/api/v1/ask', async (req, res) => {
         (mistralConfigured() ? '' : ' (LLM not configured — this is a data summary; add MISTRAL_API_KEY for natural-language answers.)')
       : `No live data found for ${symbol}. Try a valid ticker, or check the Markets panel.`;
     return res.json({ answer: fallback, symbol, source: llm?.budgetExhausted ? 'budget' : 'fallback', context: lines });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/research?symbols=A,B,C — AI-hedge-fund Research Desk.
+// Per symbol, runs three analyzers on existing feeds and cross-confirms them
+// into a morning brief (Chief-of-Staff rule: HIGH CONVICTION = two analyzers
+// agreeing with directional agreement). Read-only; degrades gracefully when a
+// feed (e.g. Finnhub insider/filings) is not configured.
+//   - Sentiment  : Loughran-McDonald finance sentiment over recent headlines
+//   - Insider    : Cohen-Malloy-Pomorski open-market purchase clusters (Form 4)
+//   - Filings     : Griffin-Tang 8-K post-publication drift window (event flag)
+// ---------------------------------------------------------------------------
+app.get('/api/v1/research', async (req, res) => {
+  try {
+    const def = ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'AMZN', 'META', 'GOOGL', 'JPM'];
+    const symbols = (req.query.symbols ? String(req.query.symbols).split(',') : def)
+      .map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 12);
+    const cacheKey = `research:${symbols.join(',')}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const from = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    const to = new Date().toISOString().slice(0, 10);
+    const driftMs = 7 * 86400000;
+
+    const perSymbol = await Promise.all(symbols.map(async (symbol) => {
+      // 1) Sentiment (always available — Yahoo/Finnhub/Marketaux headlines)
+      const news = await botFetchNews(symbol).catch(() => []);
+      const headlines = (Array.isArray(news) ? news : []).map(n => n.headline).filter(Boolean);
+      const sentiment = aggregateSentiment(headlines);
+
+      // 2) Insider clusters (Finnhub; empty when unconfigured)
+      let insider = { cluster: false, insiders: 0, buys: 0, netValue: 0, names: [] };
+      if (FINNHUB_KEY) {
+        try {
+          const raw = await finnhubFetch(`/stock/insider-transactions?symbol=${symbol}&from=${from}&to=${to}`);
+          const txns = (raw?.data || []).map(t => ({
+            name: t.name,
+            code: t.transactionCode,
+            shares: Math.abs(Number(t.change) || Number(t.share) || 0),
+            price: Number(t.transactionPrice) || 0,
+            value: Math.abs(Number(t.change) || 0) * (Number(t.transactionPrice) || 0),
+            date: t.transactionDate || t.filingDate,
+          }));
+          insider = detectCluster(txns, { windowDays: 90, minInsiders: 2 });
+        } catch { /* leave empty */ }
+      }
+
+      // 3) 8-K drift flag (Finnhub filings)
+      let events = { eightK: false, count: 0 };
+      if (FINNHUB_KEY) {
+        try {
+          const filings = await finnhubFetch(`/stock/filings?symbol=${symbol}&from=${from}&to=${to}`);
+          const recent8k = (Array.isArray(filings) ? filings : []).filter(f =>
+            /8-K/i.test(f.form || '') && (Date.now() - new Date(f.filedDate || f.acceptedDate || 0).getTime()) <= driftMs);
+          events = { eightK: recent8k.length > 0, count: recent8k.length };
+        } catch { /* leave empty */ }
+      }
+
+      return { symbol, sentiment, insider, events, headlineCount: headlines.length };
+    }));
+
+    // Build directional signals for cross-confirmation.
+    const signalsBySymbol = {};
+    const detail = {};
+    for (const r of perSymbol) {
+      const sig = {};
+      if (r.sentiment.label !== 'neutral' && r.sentiment.n > 0) {
+        sig.sentiment = { direction: r.sentiment.label, weight: 1,
+          detail: `LM sentiment ${r.sentiment.label} (tone ${r.sentiment.polarity}, ${r.sentiment.n} headlines)` };
+      }
+      if (r.insider.cluster) {
+        sig.insider = { direction: 'bullish', weight: 1.5,
+          detail: `${r.insider.insiders} insiders buying${r.insider.netValue ? ` ($${r.insider.netValue.toLocaleString()})` : ''}` };
+      }
+      signalsBySymbol[r.symbol] = sig;
+      detail[r.symbol] = r;
+    }
+
+    const brief = assembleBrief(signalsBySymbol);
+    // Merge raw analyzer detail + 8-K event notes into each entry.
+    for (const e of brief.entries) {
+      const d = detail[e.symbol];
+      e.sentiment = d.sentiment;
+      e.insider = d.insider;
+      e.events = d.events;
+      if (d.events.eightK) e.reasons.push(`recent 8-K (drift window) · ${d.events.count}`);
+    }
+
+    const result = {
+      ...brief,
+      universe: symbols,
+      configured: { finnhub: !!FINNHUB_KEY },
+      note: FINNHUB_KEY ? undefined
+        : 'Insider clusters & 8-K drift need FINNHUB_API_KEY; showing sentiment only.',
+    };
+    cacheSet(cacheKey, result, 600000); // 10 min
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
