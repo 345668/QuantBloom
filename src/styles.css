@@ -2930,3 +2930,33 @@ body.theme-light .mc-field { background: radial-gradient(ellipse at 50% 40%, #ff
 .rd-chip.rd-insider { color: var(--accent-neutral); border-color: color-mix(in srgb, var(--accent-neutral) 40%, transparent); }
 .rd-chip.rd-8k { color: var(--accent-blue); border-color: color-mix(in srgb, var(--accent-blue) 40%, transparent); }
 .rd-foot { font-size: 9px; color: var(--text-dim); margin-top: 10px; line-height: 1.4; }
+
+/* ============================================================
+   Residual Alpha screen (αT>2)
+   ============================================================ */
+.ra-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; font-size: 11px; }
+.ra-note { color: var(--text-dim); letter-spacing: 0.04em; }
+.ra-stat { color: var(--text-secondary); }
+.ra-stat b { color: var(--text-primary); }
+.ra-list { display: flex; flex-direction: column; }
+.ra-row { display: grid; grid-template-columns: 64px 68px 56px 1fr 42px; align-items: center; gap: 8px; padding: 5px 6px; border-bottom: 1px solid var(--border); font-size: 11px; cursor: pointer; }
+.ra-row:hover:not(.ra-hd) { background: var(--bg-hover); }
+.ra-hd { color: var(--text-dim); font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; cursor: default; border-bottom-color: var(--border-bright); }
+.ra-num { text-align: right; font-variant-numeric: tabular-nums; }
+.ra-sym { font-weight: 700; color: var(--text-body); display: flex; align-items: center; gap: 4px; }
+.ra-flag { font-size: 10px; }
+.ra-row.sig-pos .ra-flag { color: var(--accent-up); }
+.ra-row.sig-neg .ra-flag { color: var(--accent-down); }
+.ra-row.insig { opacity: 0.65; }
+.ra-t { font-weight: 700; }
+.ra-row.sig-pos .ra-t { color: var(--accent-up); }
+.ra-row.sig-neg .ra-t { color: var(--accent-down); }
+.ra-r2 { color: var(--text-dim); }
+.ra-bar-h { font-size: 8px; }
+.ra-bar-cell { position: relative; height: 10px; background: var(--bg-secondary); border-radius: 2px; overflow: visible; }
+.ra-bar { position: absolute; left: 0; top: 0; bottom: 0; background: var(--text-dim); border-radius: 2px; }
+.ra-row.sig-pos .ra-bar { background: var(--accent-up); }
+.ra-row.sig-neg .ra-bar { background: var(--accent-down); }
+/* the |t|=2 gate marker; positioned by the component at (2/maxT)% of the bar. */
+.ra-gate { position: absolute; top: -1px; bottom: -1px; width: 1px; background: var(--accent-neutral); opacity: 0.6; }
+.ra-foot { font-size: 9px; color: var(--text-dim); margin-top: 8px; line-height: 1.45; }

@@ -51,6 +51,7 @@ import FxGridPanel from './components/FxGridPanel.jsx';
 import RegionMapPanel from './components/RegionMapPanel.jsx';
 import MissionControlPanel from './components/MissionControlPanel.jsx';
 import ResearchDeskPanel from './components/ResearchDeskPanel.jsx';
+import ResidualAlphaPanel from './components/ResidualAlphaPanel.jsx';
 import AskPanel from './components/AskPanel.jsx';
 import SchedulerPanel from './components/SchedulerPanel.jsx';
 import SoloFocus from './components/SoloFocus.jsx';
@@ -125,9 +126,10 @@ function Dashboard() {
         <MissionControlPanel />
       </div>
 
-      {/* Row 1d: Research Desk — AI hedge-fund morning brief */}
-      <div className="dashboard-row row-1col">
+      {/* Row 1d: Research Desk — AI hedge-fund morning brief + residual alpha */}
+      <div className="dashboard-row row-2col">
         <ResearchDeskPanel />
+        <ResidualAlphaPanel />
       </div>
 
       {/* Row 2: Bot + Backtest + Markets board */}

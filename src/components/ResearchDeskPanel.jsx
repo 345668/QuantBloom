@@ -51,6 +51,9 @@ export default function ResearchDeskPanel() {
                 {e.insider?.cluster && (
                   <span className="rd-chip rd-insider">◤ {e.insider.insiders} insiders buying</span>
                 )}
+                {e.alpha?.significant && (
+                  <span className={`rd-chip sent-${e.alpha.direction}`}>α t={e.alpha.alphaT}</span>
+                )}
                 {e.events?.eightK && <span className="rd-chip rd-8k">8-K drift</span>}
               </div>
             </div>
