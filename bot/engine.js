@@ -8,6 +8,7 @@
 import { evaluateOrder, checkHaltConditions, DEFAULT_LIMITS } from './risk-gate.js';
 import { ensemble, sizePosition, STRATEGIES, PRESETS, describeStrategies, describePresets } from './strategies.js';
 import { reviewDecision, applyReview, mistralConfigured, getBudget } from './mistral.js';
+import { applyResearch } from './research-gate.js';
 import { modelStrategy } from './model.js';
 import { getModel, listTrained, trainAndRegister } from './model-registry.js';
 import { computeBracket, updateTrailingStop } from './brackets.js';
@@ -28,6 +29,9 @@ const state = {
   // trained ML model from the Model Lab drives every decision instead.
   activeModelId: null,
   useLlm: true,
+  // Fold the Research Desk's cross-confirmed brief in as an advisory gate. Like
+  // the LLM review it can only veto or damp a decision, never originate one.
+  useResearch: false,
   // Protective exits attached to each entry (null = off). slPercent 0.05 = a 5%
   // stop; tpPercent 0.10 = a 10% target. Managed broker-side as a bracket.
   brackets: { enabled: false, slPercent: 0.05, tpPercent: 0.10, trailPercent: 0 },
@@ -203,6 +207,7 @@ export function updateConfig(patch = {}) {
     if (Number.isFinite(t) && t >= 0 && t <= 1) { state.threshold = t; state.preset = 'custom'; }
   }
   if (typeof patch.useLlm === 'boolean') state.useLlm = patch.useLlm;
+  if (typeof patch.useResearch === 'boolean') state.useResearch = patch.useResearch;
   if (patch.limits && typeof patch.limits === 'object') {
     // Limits may be tightened freely but only loosened within hard ceilings,
     // so a misconfiguration cannot unlock unbounded risk.
@@ -249,7 +254,7 @@ export async function killSwitch(who = 'user') {
  *                         only used when the active model was trained with
  *                         market-relative features.
  */
-export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, fetchBenchmark, dryRun = false }) {
+export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, fetchBenchmark, fetchResearch, dryRun = false }) {
   rollDayIfNeeded();
   const startedAt = new Date().toISOString();
 
@@ -346,6 +351,14 @@ export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, fetchB
         decision = applyReview(decision, review);
       }
 
+      // Research confirmation gate — folds the cross-confirmed brief in as an
+      // advisory that can only veto or damp (never originate/enlarge). Runs
+      // before the trailing stop so a protective exit is never suppressed.
+      if (state.useResearch && fetchResearch && decision.action !== 'HOLD') {
+        const research = await fetchResearch(symbol).catch(() => null);
+        decision = applyResearch(decision, research);
+      }
+
       const price = technical.price;
       const held = posBySymbol[symbol];
 
@@ -412,6 +425,10 @@ export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, fetchB
         signals: decision.signals, llm: decision.llm || null,
         model: decision.model || null,
         vetoed: decision.vetoed || false, damped: decision.damped || false,
+        research: decision.research || null,
+        vetoedByResearch: decision.vetoedByResearch || false,
+        dampedByResearch: decision.dampedByResearch || false,
+        researchConfirmed: decision.researchConfirmed || false,
         trailingExit: decision.trailingExit || false, trailing,
         order, gate, submitted, bracket, dryRun,
       };

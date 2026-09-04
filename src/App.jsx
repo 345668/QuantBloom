@@ -50,6 +50,9 @@ import WorldClockPanel from './components/WorldClockPanel.jsx';
 import FxGridPanel from './components/FxGridPanel.jsx';
 import RegionMapPanel from './components/RegionMapPanel.jsx';
 import MissionControlPanel from './components/MissionControlPanel.jsx';
+import ResearchDeskPanel from './components/ResearchDeskPanel.jsx';
+import ResidualAlphaPanel from './components/ResidualAlphaPanel.jsx';
+import RiskMonitorPanel from './components/RiskMonitorPanel.jsx';
 import AskPanel from './components/AskPanel.jsx';
 import SchedulerPanel from './components/SchedulerPanel.jsx';
 import SoloFocus from './components/SoloFocus.jsx';
@@ -122,6 +125,17 @@ function Dashboard() {
       {/* Row 1c: Mission Control — market field + bot operations rail */}
       <div className="dashboard-row row-1col">
         <MissionControlPanel />
+      </div>
+
+      {/* Row 1d: Research Desk — AI hedge-fund morning brief + residual alpha */}
+      <div className="dashboard-row row-2col">
+        <ResearchDeskPanel />
+        <ResidualAlphaPanel />
+      </div>
+
+      {/* Row 1e: Risk Monitor — the Risk Bot's live position-book watch */}
+      <div className="dashboard-row row-1col">
+        <RiskMonitorPanel />
       </div>
 
       {/* Row 2: Bot + Backtest + Markets board */}

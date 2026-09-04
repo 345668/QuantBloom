@@ -10,6 +10,11 @@ import { covariance, efficientFrontier, portfolioVariance, minVariancePortfolio,
 import * as bot from './bot/engine.js';
 import { askQuestion, mistralConfigured } from './bot/mistral.js';
 import * as scheduler from './bot/scheduler.js';
+import { aggregateSentiment } from './src/lib/loughran.js';
+import { detectCluster } from './src/lib/insiders.js';
+import { assembleBrief } from './src/lib/brief.js';
+import { buildAlphaEntry, rankByAlpha } from './src/lib/residualAlpha.js';
+import { monitorBook, MONITOR_LIMITS } from './bot/risk-monitor.js';
 import * as broker from './bot/alpaca.js';
 import { computeTechnical } from './bot/indicators.js';
 import { runBacktest, walkForward, sweepStrategies } from './bot/backtest.js';
@@ -2128,6 +2133,97 @@ app.get('/api/v1/analytics/factors', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Residual-alpha screen (Fama-French 5 + Carhart momentum).
+// Shared factor context (leg returns + risk-free), fetched once and cached, so
+// each symbol can be regressed individually. Reused by the screen route and the
+// research brief's alpha analyzer.
+// ---------------------------------------------------------------------------
+const dailyReturns = (candles) => {
+  const out = [];
+  for (let i = 1; i < candles.length; i++) {
+    if (candles[i]?.close && candles[i - 1]?.close) out.push((candles[i].close - candles[i - 1].close) / candles[i - 1].close);
+  }
+  return out;
+};
+
+async function getFactorContext(range = '2y') {
+  const cacheKey = `factorctx:${range}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+  const legs = [...new Set(FACTOR_DEFS.flatMap(f => [f.long, f.short]).filter(Boolean))];
+  const [legCandles, rfObs] = await Promise.all([
+    Promise.allSettled(legs.map(s => yahooCandles(s, '1d', range))),
+    fredFetch('DGS3MO', { limit: 5 }).catch(() => null),
+  ]);
+  const legReturns = {};
+  legCandles.forEach((r, i) => {
+    if (r.status === 'fulfilled' && r.value.length > 30) legReturns[legs[i]] = dailyReturns(r.value);
+  });
+  const usable = FACTOR_DEFS.filter(f => legReturns[f.long] && (!f.short || legReturns[f.short]));
+  const rfAnnual = (() => {
+    const v = (rfObs || []).find(o => o.value !== '.');
+    return v ? parseFloat(v.value) / 100 : 0.045;
+  })();
+  const ctx = usable.length >= 2 ? { usable, legReturns, rfDaily: rfAnnual / 252, range } : null;
+  if (ctx) cacheSet(cacheKey, ctx, 900000); // 15 min
+  return ctx;
+}
+
+// Regress one symbol's excess returns on the factor spreads → an alpha entry.
+function symbolAlphaFit(symbol, symbolCandles, ctx) {
+  if (!ctx || !symbolCandles || symbolCandles.length < 80) return { symbol, available: false };
+  const symRets = dailyReturns(symbolCandles);
+  const len = Math.min(
+    symRets.length,
+    ...ctx.usable.flatMap(f => [ctx.legReturns[f.long].length, f.short ? ctx.legReturns[f.short].length : Infinity]).filter(n => isFinite(n))
+  );
+  if (len < 60) return { symbol, available: false };
+  const tail = (arr) => arr.slice(-len);
+  const y = tail(symRets).map(r => r - ctx.rfDaily);
+  const X = [];
+  for (let t = 0; t < len; t++) {
+    X.push(ctx.usable.map(f => {
+      const l = tail(ctx.legReturns[f.long])[t];
+      return f.short ? l - tail(ctx.legReturns[f.short])[t] : l - ctx.rfDaily;
+    }));
+  }
+  const fit = ols(X, y);
+  return buildAlphaEntry(symbol, fit);
+}
+
+app.get('/api/v1/analytics/residual-alpha', async (req, res) => {
+  try {
+    const def = ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'AMZN', 'META', 'GOOGL', 'JPM'];
+    const symbols = (req.query.symbols ? String(req.query.symbols).split(',') : def)
+      .map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 15);
+    const range = ['1y', '2y', '5y'].includes(req.query.range) ? req.query.range : '2y';
+    const cacheKey = `residalpha:${symbols.join(',')}:${range}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const ctx = await getFactorContext(range);
+    if (!ctx) return res.json({ available: false, message: 'Factor proxy data unavailable' });
+
+    const entries = await Promise.all(symbols.map(async (symbol) => {
+      const candles = await yahooCandles(symbol, '1d', range).catch(() => null);
+      return symbolAlphaFit(symbol, candles, ctx);
+    }));
+    const ranked = rankByAlpha(entries);
+    const result = {
+      available: true, range, gate: 2.0,
+      tradeList: ranked.filter(e => e.significant && e.direction === 'bullish'),
+      entries: ranked,
+      unavailable: entries.filter(e => !e.available).map(e => e.symbol),
+      methodology: 'OLS of daily excess returns on ETF-proxied Fama-French 5 + momentum spreads; |alpha t| > 2 makes the list.',
+    };
+    cacheSet(cacheKey, result, 900000);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/v1/analytics/stress?symbols=..&values=..
 // Beta-adjusted scenario analysis against historical crisis drawdowns.
 // ---------------------------------------------------------------------------
@@ -2762,6 +2858,17 @@ const botFetchNews = async (symbol) => {
   const resp = await fetch(`http://127.0.0.1:${port}/api/v1/news?symbol=${symbol}&limit=5`);
   return resp.ok ? resp.json() : [];
 };
+// The Research Desk brief entry for one symbol (advisory gate). Returns null
+// when the symbol has no directional signal, so the gate is a no-op.
+const botFetchResearch = async (symbol) => {
+  try {
+    const resp = await fetch(`http://127.0.0.1:${port}/api/v1/research?symbols=${symbol}`);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const e = (data.entries || []).find(x => x.symbol === symbol);
+    return e ? { direction: e.direction, conviction: e.conviction, reasons: e.reasons } : null;
+  } catch { return null; }
+};
 // A year of daily candles for the active model's feature computation.
 const botFetchCandles = async (symbol) => yahooCandles(symbol, '1d', '1y').catch(() => null);
 // SPY as the market benchmark for cross-asset features (1y for the live path).
@@ -2823,6 +2930,122 @@ app.post('/api/v1/ask', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// GET /api/v1/research?symbols=A,B,C — AI-hedge-fund Research Desk.
+// Per symbol, runs three analyzers on existing feeds and cross-confirms them
+// into a morning brief (Chief-of-Staff rule: HIGH CONVICTION = two analyzers
+// agreeing with directional agreement). Read-only; degrades gracefully when a
+// feed (e.g. Finnhub insider/filings) is not configured.
+//   - Sentiment  : Loughran-McDonald finance sentiment over recent headlines
+//   - Insider    : Cohen-Malloy-Pomorski open-market purchase clusters (Form 4)
+//   - Filings     : Griffin-Tang 8-K post-publication drift window (event flag)
+//   - Alpha      : Fama-French 5 + momentum residual alpha (|t|>2 = signal)
+// ---------------------------------------------------------------------------
+app.get('/api/v1/research', async (req, res) => {
+  try {
+    const def = ['AAPL', 'TSLA', 'NVDA', 'MSFT', 'AMZN', 'META', 'GOOGL', 'JPM'];
+    const symbols = (req.query.symbols ? String(req.query.symbols).split(',') : def)
+      .map(s => s.trim().toUpperCase()).filter(Boolean).slice(0, 12);
+    const cacheKey = `research:${symbols.join(',')}`;
+    const cached = cacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const from = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    const to = new Date().toISOString().slice(0, 10);
+    const driftMs = 7 * 86400000;
+    // Factor context for the residual-alpha analyzer (fetched once, cached).
+    const factorCtx = await getFactorContext('2y').catch(() => null);
+
+    const perSymbol = await Promise.all(symbols.map(async (symbol) => {
+      // 1) Sentiment (always available — Yahoo/Finnhub/Marketaux headlines)
+      const news = await botFetchNews(symbol).catch(() => []);
+      const headlines = (Array.isArray(news) ? news : []).map(n => n.headline).filter(Boolean);
+      const sentiment = aggregateSentiment(headlines);
+
+      // 2) Insider clusters (Finnhub; empty when unconfigured)
+      let insider = { cluster: false, insiders: 0, buys: 0, netValue: 0, names: [] };
+      if (FINNHUB_KEY) {
+        try {
+          const raw = await finnhubFetch(`/stock/insider-transactions?symbol=${symbol}&from=${from}&to=${to}`);
+          const txns = (raw?.data || []).map(t => ({
+            name: t.name,
+            code: t.transactionCode,
+            shares: Math.abs(Number(t.change) || Number(t.share) || 0),
+            price: Number(t.transactionPrice) || 0,
+            value: Math.abs(Number(t.change) || 0) * (Number(t.transactionPrice) || 0),
+            date: t.transactionDate || t.filingDate,
+          }));
+          insider = detectCluster(txns, { windowDays: 90, minInsiders: 2 });
+        } catch { /* leave empty */ }
+      }
+
+      // 3) 8-K drift flag (Finnhub filings)
+      let events = { eightK: false, count: 0 };
+      if (FINNHUB_KEY) {
+        try {
+          const filings = await finnhubFetch(`/stock/filings?symbol=${symbol}&from=${from}&to=${to}`);
+          const recent8k = (Array.isArray(filings) ? filings : []).filter(f =>
+            /8-K/i.test(f.form || '') && (Date.now() - new Date(f.filedDate || f.acceptedDate || 0).getTime()) <= driftMs);
+          events = { eightK: recent8k.length > 0, count: recent8k.length };
+        } catch { /* leave empty */ }
+      }
+
+      // 4) Residual alpha (Fama-French 5 + momentum; |t|>2 = signal)
+      let alpha = { available: false };
+      if (factorCtx) {
+        const candles = await yahooCandles(symbol, '1d', '2y').catch(() => null);
+        alpha = symbolAlphaFit(symbol, candles, factorCtx);
+      }
+
+      return { symbol, sentiment, insider, events, alpha, headlineCount: headlines.length };
+    }));
+
+    // Build directional signals for cross-confirmation.
+    const signalsBySymbol = {};
+    const detail = {};
+    for (const r of perSymbol) {
+      const sig = {};
+      if (r.sentiment.label !== 'neutral' && r.sentiment.n > 0) {
+        sig.sentiment = { direction: r.sentiment.label, weight: 1,
+          detail: `LM sentiment ${r.sentiment.label} (tone ${r.sentiment.polarity}, ${r.sentiment.n} headlines)` };
+      }
+      if (r.insider.cluster) {
+        sig.insider = { direction: 'bullish', weight: 1.5,
+          detail: `${r.insider.insiders} insiders buying${r.insider.netValue ? ` ($${r.insider.netValue.toLocaleString()})` : ''}` };
+      }
+      if (r.alpha?.available && r.alpha.significant) {
+        sig.alpha = { direction: r.alpha.direction, weight: 1,
+          detail: `residual alpha ${r.alpha.alphaAnnual > 0 ? '+' : ''}${r.alpha.alphaAnnual}%/yr (t=${r.alpha.alphaT})` };
+      }
+      signalsBySymbol[r.symbol] = sig;
+      detail[r.symbol] = r;
+    }
+
+    const brief = assembleBrief(signalsBySymbol);
+    // Merge raw analyzer detail + 8-K event notes into each entry.
+    for (const e of brief.entries) {
+      const d = detail[e.symbol];
+      e.sentiment = d.sentiment;
+      e.insider = d.insider;
+      e.events = d.events;
+      e.alpha = d.alpha;
+      if (d.events.eightK) e.reasons.push(`recent 8-K (drift window) · ${d.events.count}`);
+    }
+
+    const result = {
+      ...brief,
+      universe: symbols,
+      configured: { finnhub: !!FINNHUB_KEY },
+      note: FINNHUB_KEY ? undefined
+        : 'Insider clusters & 8-K drift need FINNHUB_API_KEY; showing sentiment only.',
+    };
+    cacheSet(cacheKey, result, 600000); // 10 min
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/v1/bot/status', async (req, res) => {
   try {
     const state = bot.getState();
@@ -2835,6 +3058,42 @@ app.get('/api/v1/bot/status', async (req, res) => {
       ]);
     }
     res.json({ ...state, account, positions, marketOpen: clock?.isOpen ?? null, nextOpen: clock?.nextOpen ?? null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/bot/risk-monitor — the Risk Bot's view of the position book
+// against the institutional watch thresholds (2% trim / 30% sector / 5% daily
+// drawdown). Advisory monitoring — it flags and recommends; it never places or
+// cancels real orders.
+// ---------------------------------------------------------------------------
+app.get('/api/v1/bot/risk-monitor', async (req, res) => {
+  try {
+    const state = bot.getState();
+    if (!state.brokerConfigured) {
+      return res.json({ available: false, message: 'No broker configured', limits: MONITOR_LIMITS });
+    }
+    const [account, positions] = await Promise.all([
+      broker.getAccount().catch(() => null),
+      broker.getPositions().catch(() => []),
+    ]);
+    const equity = account?.equity ?? 0;
+    const peak = state.peakEquity ?? equity;
+    const drawdownPercent = peak > 0 ? Math.max(0, (peak - equity) / peak * 100) : 0;
+    const book = {
+      equity,
+      dailyPnlPercent: account?.dailyPnlPercent ?? 0,
+      drawdownPercent,
+      positions: (positions || []).map(p => ({
+        symbol: p.symbol,
+        sector: SYMBOL_SECTOR[p.symbol] || INSTRUMENT_BY_SYMBOL[p.symbol]?.class || 'Other',
+        marketValue: p.marketValue,
+        unrealizedPlPercent: p.unrealisedPercent,
+      })),
+    };
+    res.json({ available: true, ...monitorBook(book) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2886,6 +3145,7 @@ app.post('/api/v1/bot/run', async (req, res) => {
       fetchNews: botFetchNews,
       fetchCandles: botFetchCandles,
       fetchBenchmark: botFetchBenchmark,
+      fetchResearch: botFetchResearch,
       dryRun: Boolean(req.body?.dryRun),
     });
     res.json(result);
@@ -2904,6 +3164,7 @@ const runOneTick = () => bot.runCycle({
   fetchNews: botFetchNews,
   fetchCandles: botFetchCandles,
   fetchBenchmark: botFetchBenchmark,
+  fetchResearch: botFetchResearch,
   dryRun: false,
 });
 // Bind the tick function so a manual "Run tick now" works before start.

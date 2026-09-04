@@ -2183,6 +2183,7 @@ tr.itm { background: rgba(0, 204, 68, 0.06); }
 .bot-tag { font-size: 7px; font-weight: 700; padding: 0 3px; border-radius: 2px; letter-spacing: 0.05em; }
 .bot-tag.veto { background: rgba(204,34,0,0.2); color: var(--accent-down); }
 .bot-tag.damp { background: rgba(255,184,0,0.18); color: var(--accent-neutral); }
+.bot-tag.confirm { background: rgba(0,204,68,0.18); color: var(--accent-up); }
 .bot-tag.dry { background: var(--bg-hover); color: var(--text-dim); }
 .bot-dec-why { font-size: 9px; color: var(--text-secondary); line-height: 1.35; }
 .bot-dec-llm { font-size: 9px; color: var(--text-dim); line-height: 1.35; margin-top: 1px; }
@@ -2891,3 +2892,112 @@ body.theme-light .mc-field { background: radial-gradient(ellipse at 50% 40%, #ff
 .seq-result { margin-top: 8px; font-size: 11px; color: var(--text-secondary); padding: 6px 8px; background: var(--bg-secondary); border-radius: 4px; }
 .seq-foot { font-size: 9px; color: var(--text-dim); margin-top: 8px; }
 
+
+/* ============================================================
+   Research Desk — AI hedge-fund morning brief (BRIEF)
+   ============================================================ */
+.rd-summary { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; font-size: 11px; flex-wrap: wrap; }
+.rd-asof { color: var(--text-dim); letter-spacing: 0.04em; }
+.rd-stat { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.rd-stat b { color: var(--text-primary); }
+.rd-bull { color: var(--accent-up); }
+.rd-bear { color: var(--accent-down); }
+.rd-list { display: flex; flex-direction: column; gap: 6px; }
+.rd-row { border: 1px solid var(--border); border-left-width: 3px; border-radius: 4px; padding: 8px 10px; background: var(--bg-secondary); cursor: pointer; transition: border-color 0.12s, background 0.12s; }
+.rd-row:hover { background: var(--bg-hover); }
+.rd-row.dir-bullish { border-left-color: var(--accent-up); }
+.rd-row.dir-bearish { border-left-color: var(--accent-down); }
+.rd-row.dir-neutral { border-left-color: var(--border-bright); }
+.rd-row.conv-high { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 30%, transparent); }
+.rd-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.rd-sym { font-weight: 800; font-size: 14px; color: var(--text-body); }
+.rd-dir { font-size: 10px; font-weight: 700; letter-spacing: 0.04em; }
+.rd-dir.bullish { color: var(--accent-up); }
+.rd-dir.bearish { color: var(--accent-down); }
+.rd-dir.neutral { color: var(--text-dim); }
+.rd-conv { font-size: 9px; font-weight: 700; letter-spacing: 0.08em; padding: 1px 6px; border-radius: 2px; text-transform: uppercase; }
+.rd-conv.conv-high { color: #1a1207; background: linear-gradient(180deg,#ffb300,#ff8c00); }
+.rd-conv.conv-medium { color: var(--accent-neutral); border: 1px solid var(--border-bright); }
+.rd-conv.conv-low { color: var(--text-dim); border: 1px solid var(--border); }
+.rd-agree { margin-left: auto; font-size: 10px; color: var(--text-dim); }
+.rd-reasons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+.rd-reason { font-size: 11px; color: var(--text-secondary); }
+.rd-reason:not(:last-child)::after { content: '·'; margin-left: 6px; color: var(--text-dim); }
+.rd-analyzers { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.rd-chip { font-size: 9px; font-weight: 600; letter-spacing: 0.04em; padding: 2px 6px; border-radius: 10px; border: 1px solid var(--border-bright); color: var(--text-secondary); }
+.rd-chip.sent-bullish { color: var(--accent-up); border-color: color-mix(in srgb, var(--accent-up) 40%, transparent); }
+.rd-chip.sent-bearish { color: var(--accent-down); border-color: color-mix(in srgb, var(--accent-down) 40%, transparent); }
+.rd-chip.rd-insider { color: var(--accent-neutral); border-color: color-mix(in srgb, var(--accent-neutral) 40%, transparent); }
+.rd-chip.rd-8k { color: var(--accent-blue); border-color: color-mix(in srgb, var(--accent-blue) 40%, transparent); }
+.rd-foot { font-size: 9px; color: var(--text-dim); margin-top: 10px; line-height: 1.4; }
+
+/* ============================================================
+   Residual Alpha screen (αT>2)
+   ============================================================ */
+.ra-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; font-size: 11px; }
+.ra-note { color: var(--text-dim); letter-spacing: 0.04em; }
+.ra-stat { color: var(--text-secondary); }
+.ra-stat b { color: var(--text-primary); }
+.ra-list { display: flex; flex-direction: column; }
+.ra-row { display: grid; grid-template-columns: 64px 68px 56px 1fr 42px; align-items: center; gap: 8px; padding: 5px 6px; border-bottom: 1px solid var(--border); font-size: 11px; cursor: pointer; }
+.ra-row:hover:not(.ra-hd) { background: var(--bg-hover); }
+.ra-hd { color: var(--text-dim); font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; cursor: default; border-bottom-color: var(--border-bright); }
+.ra-num { text-align: right; font-variant-numeric: tabular-nums; }
+.ra-sym { font-weight: 700; color: var(--text-body); display: flex; align-items: center; gap: 4px; }
+.ra-flag { font-size: 10px; }
+.ra-row.sig-pos .ra-flag { color: var(--accent-up); }
+.ra-row.sig-neg .ra-flag { color: var(--accent-down); }
+.ra-row.insig { opacity: 0.65; }
+.ra-t { font-weight: 700; }
+.ra-row.sig-pos .ra-t { color: var(--accent-up); }
+.ra-row.sig-neg .ra-t { color: var(--accent-down); }
+.ra-r2 { color: var(--text-dim); }
+.ra-bar-h { font-size: 8px; }
+.ra-bar-cell { position: relative; height: 10px; background: var(--bg-secondary); border-radius: 2px; overflow: visible; }
+.ra-bar { position: absolute; left: 0; top: 0; bottom: 0; background: var(--text-dim); border-radius: 2px; }
+.ra-row.sig-pos .ra-bar { background: var(--accent-up); }
+.ra-row.sig-neg .ra-bar { background: var(--accent-down); }
+/* the |t|=2 gate marker; positioned by the component at (2/maxT)% of the bar. */
+.ra-gate { position: absolute; top: -1px; bottom: -1px; width: 1px; background: var(--accent-neutral); opacity: 0.6; }
+.ra-foot { font-size: 9px; color: var(--text-dim); margin-top: 8px; line-height: 1.45; }
+
+/* ============================================================
+   Risk Monitor — the Risk Bot (RISK BOT)
+   ============================================================ */
+.rm-status { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 4px; margin-bottom: 10px; font-size: 12px; border: 1px solid var(--border-bright); }
+.rm-status.rm-ok { border-color: color-mix(in srgb, var(--accent-up) 40%, transparent); }
+.rm-status.rm-watch { border-color: color-mix(in srgb, var(--accent-neutral) 50%, transparent); }
+.rm-status.rm-critical { border-color: var(--accent-down); background: color-mix(in srgb, var(--accent-down) 10%, transparent); }
+.rm-dot { width: 9px; height: 9px; border-radius: 50%; }
+.rm-ok .rm-dot { background: var(--accent-up); box-shadow: 0 0 6px var(--accent-up); }
+.rm-watch .rm-dot { background: var(--accent-neutral); box-shadow: 0 0 6px var(--accent-neutral); }
+.rm-critical .rm-dot { background: var(--accent-down); box-shadow: 0 0 8px var(--accent-down); animation: seqpulse 1.2s infinite; }
+.rm-status-label { font-weight: 800; letter-spacing: 0.08em; }
+.rm-ok .rm-status-label { color: var(--accent-up); }
+.rm-watch .rm-status-label { color: var(--accent-neutral); }
+.rm-critical .rm-status-label { color: var(--accent-down); }
+.rm-metric { margin-left: auto; color: var(--text-secondary); font-variant-numeric: tabular-nums; font-size: 11px; }
+.rm-metric + .rm-metric { margin-left: 0; }
+.rm-actions { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.rm-action { display: flex; align-items: baseline; gap: 8px; font-size: 11px; padding: 4px 8px; border-radius: 3px; background: var(--bg-secondary); }
+.rm-act-tag { font-size: 8px; font-weight: 800; letter-spacing: 0.08em; padding: 1px 5px; border-radius: 2px; }
+.act-trim .rm-act-tag { color: var(--accent-neutral); background: rgba(255,184,0,0.16); }
+.act-rebalance .rm-act-tag { color: var(--accent-blue); background: rgba(0,136,255,0.16); }
+.act-liquidate .rm-act-tag { color: var(--accent-down); background: rgba(204,34,0,0.2); }
+.rm-act-detail { color: var(--text-body); }
+.rm-sub { font-size: 8px; letter-spacing: 0.1em; color: var(--text-primary); text-transform: uppercase; opacity: 0.8; margin: 10px 0 5px; }
+.rm-empty { font-size: 11px; color: var(--text-dim); padding: 4px 2px; }
+.rm-list { display: flex; flex-direction: column; }
+.rm-row { display: grid; grid-template-columns: 58px 1fr 52px 1fr 48px; align-items: center; gap: 8px; padding: 4px 4px; border-bottom: 1px solid var(--border); font-size: 11px; }
+.rm-row.flag { background: color-mix(in srgb, var(--accent-neutral) 8%, transparent); }
+.rm-sym { font-weight: 700; color: var(--text-body); }
+.rm-sector { color: var(--text-dim); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rm-sector-name { grid-column: span 2; }
+.rm-pnl { text-align: right; font-variant-numeric: tabular-nums; }
+.rm-bar-cell { position: relative; height: 10px; background: var(--bg-secondary); border-radius: 2px; }
+.rm-sector-bar { grid-column: span 1; }
+.rm-bar { position: absolute; left: 0; top: 0; bottom: 0; background: var(--text-primary); border-radius: 2px; opacity: 0.8; }
+.rm-row.flag .rm-bar { background: var(--accent-neutral); }
+.rm-gate { position: absolute; top: -1px; bottom: -1px; width: 1px; background: var(--accent-down); opacity: 0.55; }
+.rm-wt { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+.rm-foot { font-size: 9px; color: var(--text-dim); margin-top: 10px; line-height: 1.45; }
