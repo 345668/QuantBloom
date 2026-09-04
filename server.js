@@ -14,6 +14,7 @@ import { aggregateSentiment } from './src/lib/loughran.js';
 import { detectCluster } from './src/lib/insiders.js';
 import { assembleBrief } from './src/lib/brief.js';
 import { buildAlphaEntry, rankByAlpha } from './src/lib/residualAlpha.js';
+import { monitorBook, MONITOR_LIMITS } from './bot/risk-monitor.js';
 import * as broker from './bot/alpaca.js';
 import { computeTechnical } from './bot/indicators.js';
 import { runBacktest, walkForward, sweepStrategies } from './bot/backtest.js';
@@ -3057,6 +3058,42 @@ app.get('/api/v1/bot/status', async (req, res) => {
       ]);
     }
     res.json({ ...state, account, positions, marketOpen: clock?.isOpen ?? null, nextOpen: clock?.nextOpen ?? null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/bot/risk-monitor — the Risk Bot's view of the position book
+// against the institutional watch thresholds (2% trim / 30% sector / 5% daily
+// drawdown). Advisory monitoring — it flags and recommends; it never places or
+// cancels real orders.
+// ---------------------------------------------------------------------------
+app.get('/api/v1/bot/risk-monitor', async (req, res) => {
+  try {
+    const state = bot.getState();
+    if (!state.brokerConfigured) {
+      return res.json({ available: false, message: 'No broker configured', limits: MONITOR_LIMITS });
+    }
+    const [account, positions] = await Promise.all([
+      broker.getAccount().catch(() => null),
+      broker.getPositions().catch(() => []),
+    ]);
+    const equity = account?.equity ?? 0;
+    const peak = state.peakEquity ?? equity;
+    const drawdownPercent = peak > 0 ? Math.max(0, (peak - equity) / peak * 100) : 0;
+    const book = {
+      equity,
+      dailyPnlPercent: account?.dailyPnlPercent ?? 0,
+      drawdownPercent,
+      positions: (positions || []).map(p => ({
+        symbol: p.symbol,
+        sector: SYMBOL_SECTOR[p.symbol] || INSTRUMENT_BY_SYMBOL[p.symbol]?.class || 'Other',
+        marketValue: p.marketValue,
+        unrealizedPlPercent: p.unrealisedPercent,
+      })),
+    };
+    res.json({ available: true, ...monitorBook(book) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

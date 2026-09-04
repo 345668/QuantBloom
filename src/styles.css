@@ -2960,3 +2960,44 @@ body.theme-light .mc-field { background: radial-gradient(ellipse at 50% 40%, #ff
 /* the |t|=2 gate marker; positioned by the component at (2/maxT)% of the bar. */
 .ra-gate { position: absolute; top: -1px; bottom: -1px; width: 1px; background: var(--accent-neutral); opacity: 0.6; }
 .ra-foot { font-size: 9px; color: var(--text-dim); margin-top: 8px; line-height: 1.45; }
+
+/* ============================================================
+   Risk Monitor — the Risk Bot (RISK BOT)
+   ============================================================ */
+.rm-status { display: flex; align-items: center; gap: 12px; padding: 8px 10px; border-radius: 4px; margin-bottom: 10px; font-size: 12px; border: 1px solid var(--border-bright); }
+.rm-status.rm-ok { border-color: color-mix(in srgb, var(--accent-up) 40%, transparent); }
+.rm-status.rm-watch { border-color: color-mix(in srgb, var(--accent-neutral) 50%, transparent); }
+.rm-status.rm-critical { border-color: var(--accent-down); background: color-mix(in srgb, var(--accent-down) 10%, transparent); }
+.rm-dot { width: 9px; height: 9px; border-radius: 50%; }
+.rm-ok .rm-dot { background: var(--accent-up); box-shadow: 0 0 6px var(--accent-up); }
+.rm-watch .rm-dot { background: var(--accent-neutral); box-shadow: 0 0 6px var(--accent-neutral); }
+.rm-critical .rm-dot { background: var(--accent-down); box-shadow: 0 0 8px var(--accent-down); animation: seqpulse 1.2s infinite; }
+.rm-status-label { font-weight: 800; letter-spacing: 0.08em; }
+.rm-ok .rm-status-label { color: var(--accent-up); }
+.rm-watch .rm-status-label { color: var(--accent-neutral); }
+.rm-critical .rm-status-label { color: var(--accent-down); }
+.rm-metric { margin-left: auto; color: var(--text-secondary); font-variant-numeric: tabular-nums; font-size: 11px; }
+.rm-metric + .rm-metric { margin-left: 0; }
+.rm-actions { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.rm-action { display: flex; align-items: baseline; gap: 8px; font-size: 11px; padding: 4px 8px; border-radius: 3px; background: var(--bg-secondary); }
+.rm-act-tag { font-size: 8px; font-weight: 800; letter-spacing: 0.08em; padding: 1px 5px; border-radius: 2px; }
+.act-trim .rm-act-tag { color: var(--accent-neutral); background: rgba(255,184,0,0.16); }
+.act-rebalance .rm-act-tag { color: var(--accent-blue); background: rgba(0,136,255,0.16); }
+.act-liquidate .rm-act-tag { color: var(--accent-down); background: rgba(204,34,0,0.2); }
+.rm-act-detail { color: var(--text-body); }
+.rm-sub { font-size: 8px; letter-spacing: 0.1em; color: var(--text-primary); text-transform: uppercase; opacity: 0.8; margin: 10px 0 5px; }
+.rm-empty { font-size: 11px; color: var(--text-dim); padding: 4px 2px; }
+.rm-list { display: flex; flex-direction: column; }
+.rm-row { display: grid; grid-template-columns: 58px 1fr 52px 1fr 48px; align-items: center; gap: 8px; padding: 4px 4px; border-bottom: 1px solid var(--border); font-size: 11px; }
+.rm-row.flag { background: color-mix(in srgb, var(--accent-neutral) 8%, transparent); }
+.rm-sym { font-weight: 700; color: var(--text-body); }
+.rm-sector { color: var(--text-dim); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rm-sector-name { grid-column: span 2; }
+.rm-pnl { text-align: right; font-variant-numeric: tabular-nums; }
+.rm-bar-cell { position: relative; height: 10px; background: var(--bg-secondary); border-radius: 2px; }
+.rm-sector-bar { grid-column: span 1; }
+.rm-bar { position: absolute; left: 0; top: 0; bottom: 0; background: var(--text-primary); border-radius: 2px; opacity: 0.8; }
+.rm-row.flag .rm-bar { background: var(--accent-neutral); }
+.rm-gate { position: absolute; top: -1px; bottom: -1px; width: 1px; background: var(--accent-down); opacity: 0.55; }
+.rm-wt { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+.rm-foot { font-size: 9px; color: var(--text-dim); margin-top: 10px; line-height: 1.45; }

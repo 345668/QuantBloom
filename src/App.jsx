@@ -52,6 +52,7 @@ import RegionMapPanel from './components/RegionMapPanel.jsx';
 import MissionControlPanel from './components/MissionControlPanel.jsx';
 import ResearchDeskPanel from './components/ResearchDeskPanel.jsx';
 import ResidualAlphaPanel from './components/ResidualAlphaPanel.jsx';
+import RiskMonitorPanel from './components/RiskMonitorPanel.jsx';
 import AskPanel from './components/AskPanel.jsx';
 import SchedulerPanel from './components/SchedulerPanel.jsx';
 import SoloFocus from './components/SoloFocus.jsx';
@@ -130,6 +131,11 @@ function Dashboard() {
       <div className="dashboard-row row-2col">
         <ResearchDeskPanel />
         <ResidualAlphaPanel />
+      </div>
+
+      {/* Row 1e: Risk Monitor — the Risk Bot's live position-book watch */}
+      <div className="dashboard-row row-1col">
+        <RiskMonitorPanel />
       </div>
 
       {/* Row 2: Bot + Backtest + Markets board */}
