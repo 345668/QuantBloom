@@ -420,6 +420,7 @@ export async function runCycle({ fetchTechnical, fetchNews, fetchCandles, fetchB
 
       const record = {
         at: new Date().toISOString(), symbol,
+        markPrice: price,   // price at decision time, for the maker-checker scorecard
         action: decision.action, confidence: decision.confidence,
         agreement: decision.agreement, rationale: decision.rationale,
         signals: decision.signals, llm: decision.llm || null,

@@ -3001,3 +3001,45 @@ body.theme-light .mc-field { background: radial-gradient(ellipse at 50% 40%, #ff
 .rm-gate { position: absolute; top: -1px; bottom: -1px; width: 1px; background: var(--accent-down); opacity: 0.55; }
 .rm-wt { text-align: right; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 .rm-foot { font-size: 9px; color: var(--text-dim); margin-top: 10px; line-height: 1.45; }
+
+/* ============================================================
+   Fund Operations — six-layer map + maker-checker (FUND OPS)
+   ============================================================ */
+.fo-layers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 12px; }
+@media (max-width: 900px) { .fo-layers { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .fo-layers { grid-template-columns: 1fr; } }
+.fo-layer { display: flex; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-left-width: 3px; border-radius: 4px; background: var(--bg-secondary); }
+.fo-layer.st-live { border-left-color: var(--accent-up); }
+.fo-layer.st-watch { border-left-color: var(--accent-neutral); }
+.fo-layer.st-alert { border-left-color: var(--accent-down); }
+.fo-layer.st-idle { border-left-color: var(--border-bright); }
+.fo-layer.st-na { border-left-color: var(--border); opacity: 0.7; }
+.fo-num { font-size: 16px; font-weight: 800; color: var(--text-dim); line-height: 1; }
+.fo-layer-body { flex: 1; min-width: 0; }
+.fo-layer-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.fo-layer-name { font-weight: 700; font-size: 12px; color: var(--text-body); }
+.fo-pill { font-size: 8px; font-weight: 700; letter-spacing: 0.06em; padding: 1px 5px; border-radius: 2px; }
+.fo-pill.st-live { color: var(--accent-up); background: color-mix(in srgb, var(--accent-up) 15%, transparent); }
+.fo-pill.st-watch { color: var(--accent-neutral); background: color-mix(in srgb, var(--accent-neutral) 15%, transparent); }
+.fo-pill.st-alert { color: var(--accent-down); background: color-mix(in srgb, var(--accent-down) 18%, transparent); }
+.fo-pill.st-idle { color: var(--text-dim); background: var(--bg-hover); }
+.fo-pill.st-na { color: var(--text-dim); background: var(--bg-hover); }
+.fo-layer-maps { font-size: 10px; color: var(--text-primary); opacity: 0.8; margin-top: 2px; }
+.fo-layer-metric { font-size: 10px; color: var(--text-secondary); margin-top: 3px; }
+.fo-sub { font-size: 8px; letter-spacing: 0.1em; color: var(--text-primary); text-transform: uppercase; opacity: 0.85; margin: 6px 0 6px; border-top: 1px solid var(--border); padding-top: 10px; }
+.fo-total { color: var(--text-secondary); }
+.fo-empty { font-size: 11px; color: var(--text-dim); line-height: 1.5; }
+.fo-score { display: flex; flex-direction: column; gap: 2px; }
+.fo-score-row { display: grid; grid-template-columns: 28px 1fr 70px 64px 48px; align-items: center; gap: 8px; padding: 4px 4px; border-bottom: 1px solid var(--border); font-size: 11px; }
+.fo-grade { font-weight: 800; text-align: center; border-radius: 3px; padding: 1px 0; font-size: 12px; }
+.g-A { color: var(--accent-up); background: color-mix(in srgb, var(--accent-up) 15%, transparent); }
+.g-B { color: #9acd32; }
+.g-C { color: var(--accent-neutral); }
+.g-D { color: #ff8c00; }
+.g-F { color: var(--accent-down); background: color-mix(in srgb, var(--accent-down) 15%, transparent); }
+.g-na { color: var(--text-dim); }
+.fo-src { color: var(--text-body); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fo-hit, .fo-ret, .fo-n { text-align: right; font-variant-numeric: tabular-nums; }
+.fo-hit { color: var(--text-secondary); }
+.fo-n { color: var(--text-dim); }
+.fo-foot { font-size: 9px; color: var(--text-dim); margin-top: 10px; line-height: 1.45; }

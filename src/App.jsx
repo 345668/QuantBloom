@@ -53,6 +53,7 @@ import MissionControlPanel from './components/MissionControlPanel.jsx';
 import ResearchDeskPanel from './components/ResearchDeskPanel.jsx';
 import ResidualAlphaPanel from './components/ResidualAlphaPanel.jsx';
 import RiskMonitorPanel from './components/RiskMonitorPanel.jsx';
+import FundOpsPanel from './components/FundOpsPanel.jsx';
 import AskPanel from './components/AskPanel.jsx';
 import SchedulerPanel from './components/SchedulerPanel.jsx';
 import SoloFocus from './components/SoloFocus.jsx';
@@ -136,6 +137,11 @@ function Dashboard() {
       {/* Row 1e: Risk Monitor — the Risk Bot's live position-book watch */}
       <div className="dashboard-row row-1col">
         <RiskMonitorPanel />
+      </div>
+
+      {/* Row 1f: Fund Operations — six-layer map + maker-checker scorecard */}
+      <div className="dashboard-row row-1col">
+        <FundOpsPanel />
       </div>
 
       {/* Row 2: Bot + Backtest + Markets board */}
