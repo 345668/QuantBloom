@@ -15,6 +15,7 @@ import { detectCluster } from './src/lib/insiders.js';
 import { assembleBrief } from './src/lib/brief.js';
 import { buildAlphaEntry, rankByAlpha } from './src/lib/residualAlpha.js';
 import { monitorBook, MONITOR_LIMITS } from './bot/risk-monitor.js';
+import { buildScorecard } from './src/lib/scorecard.js';
 import * as broker from './bot/alpaca.js';
 import { computeTechnical } from './bot/indicators.js';
 import { runBacktest, walkForward, sweepStrategies } from './bot/backtest.js';
@@ -3094,6 +3095,28 @@ app.get('/api/v1/bot/risk-monitor', async (req, res) => {
       })),
     };
     res.json({ available: true, ...monitorBook(book) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/v1/bot/scorecard — maker-checker. Grades each decision source (rule
+// strategies + models) on realized signal accuracy: for every past decision
+// with a known mark price, compare to the current price and check whether the
+// direction paid off. Read-only self-assessment.
+// ---------------------------------------------------------------------------
+app.get('/api/v1/bot/scorecard', async (req, res) => {
+  try {
+    const decisions = bot.getDecisions(200);
+    const symbols = [...new Set(decisions.map(d => d.symbol).filter(Boolean))];
+    const priceBySymbol = {};
+    if (symbols.length) {
+      const quotes = await Promise.allSettled(symbols.map(s => yahooQuote(s)));
+      quotes.forEach((q, i) => { if (q.status === 'fulfilled' && q.value?.price) priceBySymbol[symbols[i]] = q.value.price; });
+    }
+    const scorecard = buildScorecard(decisions, priceBySymbol);
+    res.json({ ...scorecard, decisionsSeen: decisions.length, symbolsPriced: Object.keys(priceBySymbol).length });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
