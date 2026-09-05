@@ -24,15 +24,33 @@ export default function AskPanel() {
     setQ('');
     setBusy(true);
     try {
-      const resp = await fetch('/api/v1/ask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: text, symbol: sym }),
-      });
-      const data = await resp.json();
+      let resp;
+      try {
+        resp = await fetch('/api/v1/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question: text, symbol: sym }),
+        });
+      } catch {
+        throw new Error('Can’t reach the QuantBloom API — is the server running?');
+      }
+      // The response is only JSON when the API answered. A proxy/error page
+      // (e.g. the API is down) is HTML, so parse defensively rather than letting
+      // resp.json() throw a cryptic "string did not match the expected pattern".
+      const ct = resp.headers.get('content-type') || '';
+      const raw = await resp.text();
+      let data = null;
+      if (ct.includes('application/json')) {
+        try { data = JSON.parse(raw); } catch { /* fall through */ }
+      }
+      if (!data) {
+        throw new Error(resp.ok
+          ? 'The API returned an unexpected (non-JSON) response.'
+          : `The API is unavailable (HTTP ${resp.status}). Is the server running?`);
+      }
       setThread(t => [...t, { role: 'askb', text: data.answer || data.error || 'No answer.', source: data.source, model: data.model }]);
     } catch (e) {
-      setThread(t => [...t, { role: 'askb', text: `Error: ${e.message}`, source: 'error' }]);
+      setThread(t => [...t, { role: 'askb', text: e.message, source: 'error' }]);
     } finally {
       setBusy(false);
     }
